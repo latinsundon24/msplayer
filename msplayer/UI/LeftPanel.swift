@@ -299,8 +299,14 @@ struct LeftPanel: View {
     }
 
     private func programs(for channel: Channel) -> [EPGProgram] {
-        let hoursBack: Double = catchUpAvailable ? 12 : 1
-        return store.programs(for: channel, hoursBack: hoursBack, hoursForward: 12)
+        // 节目单展示完整一天：今天 00:00 到 24:00。
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: now)
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? now.addingTimeInterval(12 * 3600)
+        let back = max(0, now.timeIntervalSince(dayStart) / 3600)
+        let forward = max(0.5, dayEnd.timeIntervalSince(now) / 3600)
+        return store.programs(for: channel, hoursBack: back, hoursForward: forward)
     }
 
     private func scrollToCurrent(_ proxy: ScrollViewProxy) {
@@ -404,8 +410,8 @@ struct LeftPanel: View {
     }
 
     private var appVersion: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "4"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "5"
         return "v\(short)(\(build))"
     }
 

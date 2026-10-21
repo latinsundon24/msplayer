@@ -139,6 +139,15 @@ struct RootView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .onAppear { bootstrap() }
+        .task {
+            await store.reparseAfterUpgrade()
+            if let current = store.currentGroups.first(where: { $0.name == currentGroup?.name }) {
+                currentGroup = current
+                lineIndex = min(lineIndex, max(0, current.lines.count - 1))
+            } else if currentGroup == nil {
+                currentGroup = store.currentGroups.first
+            }
+        }
         .onReceive(ticker) { now = $0 }
         .onChange(of: store.selectedSourceID) { _ in
             if currentGroup == nil || !store.currentGroups.contains(where: { $0.name == currentGroup?.name }) {

@@ -26,6 +26,12 @@ final class Store: ObservableObject {
     private let epgSourcesKey = "msplayer.epgSources"
     private let epgKey = "msplayer.epg"
     private let settingsKey = "msplayer.settings"
+    private let parserVersionKey = "msplayer.parserVersion"
+    /// 解析器版本：1.3 起支持 catchup-source 的 `?` / `&` 后缀。
+    private static let parserVersion = 2
+
+    /// 升级后需要按新解析器重新解析已缓存的列表。
+    private(set) var needsReparse = false
 
     private init() {
         load()
@@ -87,6 +93,7 @@ final class Store: ObservableObject {
         var source = Source(name: name.isEmpty ? defaultName(for: location) : name,
                             kind: .local,
                             location: location)
+        source.content = content
         source.count = channels.count
         source.updatedAt = Date()
         sources.append(source)
@@ -105,6 +112,11 @@ final class Store: ObservableObject {
                     throw StoreError.emptyPlaylist
                 }
                 text = try String(contentsOf: url, encoding: .utf8)
+            } else if source.kind == .local {
+                guard let content = source.content else {
+                    throw StoreError.emptyPlaylist
+                }
+                text = content
             } else {
                 text = try await HTTPService.fetchText(source.location)
             }
@@ -117,8 +129,29 @@ final class Store: ObservableObject {
     }
 
     func refreshAll() async {
-        for source in sources where source.kind == .remote {
+        for source in sources where source.kind == .remote || (source.kind == .local && source.content != nil) {
             await refresh(source)
+        }
+    }
+
+    /// 升级后按新解析器重新解析缓存列表（当前列表优先）。
+    func reparseAfterUpgrade() async {
+        guard needsReparse else { return }
+        needsReparse = false
+
+        var ordered: [Source] = []
+        if let current = currentSource,
+           current.kind == .remote || (current.kind == .local && current.content != nil) {
+            ordered.append(current)
+        }
+        for source in sources where source.kind == .remote || (source.kind == .local && source.content != nil) {
+            if !ordered.contains(where: { $0.id == source.id }) { ordered.append(source) }
+        }
+        for source in ordered {
+            await refresh(source)
+        }
+        if sources.contains(where: { $0.kind == .local && $0.content == nil }) {
+            lastError = "本地列表需要重新导入一次，才能使用新的回看解析"
         }
     }
 
@@ -206,16 +239,17 @@ final class Store: ObservableObject {
             for name in names where !merged.contains(name) { merged.append(name) }
             base.channelNames[id] = merged
         }
-        let cutoff = Date().addingTimeInterval(-12 * 3600)
+        let cutoff = Calendar.current.startOfDay(for: Date())
+        let limit = Date().addingTimeInterval(48 * 3600)
         for (id, programs) in incoming.programs {
             var list = base.programs[id] ?? []
             list.append(contentsOf: programs)
             var seen = Set<String>()
             list = list
-                .filter { $0.stop > cutoff }
+                .filter { $0.stop > cutoff && $0.start < limit }
                 .filter { seen.insert("\($0.start.timeIntervalSince1970)|\($0.title)").inserted }
                 .sorted { $0.start < $1.start }
-            base.programs[id] = Array(list.prefix(500))
+            base.programs[id] = Array(list.prefix(1200))
         }
         epgDatabase = base
     }
@@ -268,6 +302,10 @@ final class Store: ObservableObject {
         if let data = defaults.data(forKey: sourcesKey),
            let list = try? JSONDecoder().decode([Source].self, from: data) {
             sources = list
+        }
+        if defaults.integer(forKey: parserVersionKey) < Store.parserVersion {
+            needsReparse = !sources.isEmpty
+            defaults.set(Store.parserVersion, forKey: parserVersionKey)
         }
         if let data = defaults.data(forKey: channelsKey),
            let stored = try? JSONDecoder().decode([String: [Channel]].self, from: data) {

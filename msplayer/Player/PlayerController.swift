@@ -56,6 +56,8 @@ final class PlayerController: NSObject, ObservableObject {
     private var rate: Float = 1
     private var proxyAttempted = false
     private var vlcFallbackTried = false
+    private var systemFallbackTried = false
+    private var startupWatchdog: Task<Void, Never>?
     private weak var vlcDrawable: UIView?
     @Published private(set) var videoSize: CGSize = .zero
 
@@ -136,6 +138,7 @@ final class PlayerController: NSObject, ObservableObject {
         self.lineIndex = lineIndex
         proxyAttempted = false
         vlcFallbackTried = false
+        systemFallbackTried = false
         wantsPlayback = true
         errorMessage = nil
         resolution = ""
@@ -255,6 +258,8 @@ final class PlayerController: NSObject, ObservableObject {
 
     func stopCurrent() {
         openToken = UUID()
+        startupWatchdog?.cancel()
+        startupWatchdog = nil
         dash?.stop()
         dash = nil
         proxy?.stop()
@@ -292,6 +297,61 @@ final class PlayerController: NSObject, ObservableObject {
         } else {
             startSystem(url: url, headers: headers, channel: channel)
         }
+    }
+
+    // MARK: - 回看解码兜底
+
+    private var isCatchUpPlayback: Bool {
+        playbackURL.lowercased().contains("playseek=")
+    }
+
+    /// 回看流启动 15 秒仍无画面时，自动换另一个解码器重试一次。
+    private func armStartupWatchdog(expecting backend: Backend) {
+        startupWatchdog?.cancel()
+        guard isCatchUpPlayback else { return }
+        let token = openToken
+        startupWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard !Task.isCancelled, let self, self.openToken == token, self.wantsPlayback else { return }
+            switch backend {
+            case .system:
+                guard self.backend == .system, let item = self.avPlayer.currentItem else { return }
+                let stuck = item.status != .readyToPlay
+                    || (self.avPlayer.rate == 0 && self.currentTime < 1)
+                if stuck { self.retryCatchUpWithVLC() }
+            case .vlc:
+                #if canImport(MobileVLCKit)
+                guard self.backend == .vlc,
+                      let player = self.vlcPlayer as? VLCMediaPlayer else { return }
+                if player.state != .playing && player.state != .buffering {
+                    self.retryCatchUpWithSystem()
+                }
+                #endif
+            case .idle:
+                break
+            }
+        }
+    }
+
+    private func retryCatchUpWithVLC() {
+        guard canUseVLC, !vlcFallbackTried,
+              let channel = currentChannel,
+              let url = URL(string: playbackURL) else { return }
+        vlcFallbackTried = true
+        NSLog("[msplayer] catch-up: switch to VLC")
+        startVLC(url: url, headers: channel.headers)
+    }
+
+    @discardableResult
+    private func retryCatchUpWithSystem() -> Bool {
+        guard !systemFallbackTried, !vlcFallbackTried,
+              let channel = currentChannel,
+              let url = URL(string: playbackURL) else { return false }
+        systemFallbackTried = true
+        vlcFallbackTried = true
+        NSLog("[msplayer] catch-up: switch to AVPlayer")
+        startSystem(url: url, headers: channel.headers, channel: channel)
+        return true
     }
 
     // MARK: - 系统解码
@@ -349,6 +409,7 @@ final class PlayerController: NSObject, ObservableObject {
             avPlayer.playImmediately(atRate: rate)
             isPlaying = true
         }
+        armStartupWatchdog(expecting: .system)
     }
 
     private func reportSystemError(_ item: AVPlayerItem) {
@@ -383,7 +444,8 @@ final class PlayerController: NSObject, ObservableObject {
         }
 
         // 2) 系统解码失败：交给 VLC
-        if canUseVLC, !vlcFallbackTried, Store.shared.settings.decoder != .system,
+        if canUseVLC, !vlcFallbackTried,
+           (Store.shared.settings.decoder != .system || isCatchUpPlayback),
            let channel = currentChannel, let url = URL(string: playbackURL) {
             vlcFallbackTried = true
             NSLog("[msplayer] fallback to VLC: %@", playbackURL)
@@ -444,6 +506,7 @@ final class PlayerController: NSObject, ObservableObject {
         player.play()
         isPlaying = true
         onPlaybackStarted?()
+        armStartupWatchdog(expecting: .vlc)
         #else
         errorMessage = "当前版本未集成 VLC 解码器"
         #endif
@@ -508,6 +571,7 @@ final class PlayerController: NSObject, ObservableObject {
         lines.append("模式：\(playbackMode)")
         lines.append("播放地址：\(playbackURL.isEmpty ? "—" : playbackURL)")
         lines.append("解码：\(backend == .vlc ? "VLC" : backend == .system ? "AVPlayer" : "—")")
+        lines.append("回看：\(isCatchUpPlayback ? "是" : "否")")
         if backend == .system, let item = avPlayer.currentItem {
             lines.append("Item：status=\(item.status.rawValue) 轨道=\(item.tracks.count)")
         }
@@ -540,7 +604,9 @@ extension PlayerController: VLCMediaPlayerDelegate {
                 self.isPlaying = false
             case .error:
                 self.isPlaying = false
-                self.errorMessage = "VLC 播放失败：格式或网络不可用"
+                if !(self.isCatchUpPlayback && self.retryCatchUpWithSystem()) {
+                    self.errorMessage = "VLC 播放失败：格式或网络不可用"
+                }
             default:
                 break
             }
@@ -567,7 +633,9 @@ extension PlayerController: VLCMediaPlayerDelegate {
     nonisolated func mediaPlayerEncounteredError(_ aNotification: Notification!) {
         Task { @MainActor [weak self] in
             guard let self, self.backend == .vlc else { return }
-            self.errorMessage = "VLC 无法播放该流"
+            if !(self.isCatchUpPlayback && self.retryCatchUpWithSystem()) {
+                self.errorMessage = "VLC 无法播放该流"
+            }
             self.isPlaying = false
         }
     }

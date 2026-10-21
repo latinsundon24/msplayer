@@ -129,6 +129,8 @@ struct Source: Codable, Identifiable, Hashable {
     var location: String
     var count: Int = 0
     var updatedAt: Date = Date()
+    /// 本地导入时保留原始列表内容，升级后可自动重新解析。
+    var content: String? = nil
 
     var kindLabel: String {
         switch kind {
