@@ -1,0 +1,19 @@
+#EXTM3U
+
+#EXTINF:-1 group-title="示例",Big Buck Bunny
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+
+#EXTINF:-1 group-title="示例",Sintel
+https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8
+
+#EXTINF:-1 group-title="示例",Tears of Steel
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
+
+#EXTINF:-1 group-title="示例",Apple BipBop
+https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8
+
+#EXTINF:-1 group-title="演示",ClearKey DASH 演示（内置离线）
+#KODIPROP:inputstream.adaptive.manifest_type=mpd
+#KODIPROP:inputstream.adaptive.license_type=clearkey
+#KODIPROP:inputstream.adaptive.license_key=feedf00d-eede-adbe-eff0-baadf00dd00d:00112233445566778899aabbccddeeff
+msplayer-bundle://demo-dash/stream.mpd

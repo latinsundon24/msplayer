@@ -1,0 +1,86 @@
+name: build-ipa
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          xcode-select -p
+          ruby --version
+          pod --version || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Install CocoaPods dependencies
+        env:
+          COCOAPODS_DISABLE_STATS: "true"
+        run: pod install --repo-update
+
+      - name: Core logic tests (macOS)
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project msplayer.xcodeproj \
+            -scheme MSCoreTests \
+            -destination 'platform=macOS' \
+            -derivedDataPath build-tests \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build unsigned app (iOS device)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace msplayer.xcworkspace \
+            -scheme msplayer \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then
+            echo "app not found"
+            exit 1
+          fi
+          echo "APP=$APP"
+          du -sh "$APP"
+          rm -rf Payload msplayer-1.0-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry msplayer-1.0-unsigned.ipa Payload
+          shasum -a 256 msplayer-1.0-unsigned.ipa | tee msplayer-1.0-unsigned.ipa.sha256
+          ls -lh msplayer-1.0-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: msplayer-unsigned-ipa
+          path: |
+            msplayer-1.0-unsigned.ipa
+            msplayer-1.0-unsigned.ipa.sha256
+          if-no-files-found: error

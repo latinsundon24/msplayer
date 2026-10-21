@@ -1,0 +1,16 @@
+# XcodeGen / CocoaPods 生成物
+*.xcodeproj
+*.xcworkspace
+Pods/
+Podfile.lock
+build/
+build-tests/
+DerivedData/
+Payload/
+*.ipa
+*.ipa.sha256
+
+# macOS / Xcode
+.DS_Store
+xcuserdata/
+*.xcuserstate
