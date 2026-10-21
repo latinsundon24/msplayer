@@ -185,3 +185,49 @@ final class XMLTVTests: XCTestCase {
         XCTAssertEqual(EPGMatching.match(channel: channel, in: database), "cctv1")
     }
 }
+
+final class CatchUpTests: XCTestCase {
+
+    func testSupportsPlayseekTemplate() {
+        let long = Channel(name: "回看频道",
+                           url: "http://example.com/live.m3u8?token=1&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}")
+        XCTAssertTrue(CatchUp.supports(long))
+        XCTAssertTrue(CatchUp.supports(url: "http://example.com/live.m3u8?playseek=${(b)}-${(e)}"))
+        XCTAssertFalse(CatchUp.supports(url: "http://example.com/live.m3u8?playseek=20260101000000-20260101010000"))
+        XCTAssertFalse(CatchUp.supports(url: "http://example.com/live.m3u8"))
+    }
+
+    func testBuildCatchUpURLReplacesTokens() {
+        let channel = Channel(name: "回看频道",
+                              url: "http://example.com/live.m3u8?a=1&amp;playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}&amp;b=2")
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let to = Date(timeIntervalSince1970: 1_700_003_600)
+
+        let expected = "http://example.com/live.m3u8?a=1&playseek="
+            + "\(CatchUp.timeString(from))-\(CatchUp.timeString(to))&b=2"
+        XCTAssertEqual(CatchUp.url(for: channel, from: from, to: to), expected)
+    }
+
+    func testBuildCatchUpURLSupportsShortTokens() {
+        let raw = "http://example.com/live.m3u8?playseek=${(b)}-${(e)}"
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let to = Date(timeIntervalSince1970: 1_700_003_600)
+        XCTAssertEqual(CatchUp.url(for: raw, from: from, to: to),
+                       "http://example.com/live.m3u8?playseek=\(CatchUp.timeString(from))-\(CatchUp.timeString(to))")
+    }
+
+    func testLiveURLStripsPlayseek() {
+        XCTAssertEqual(CatchUp.liveURL(from: "http://example.com/live.m3u8?playseek=${(b)}-${(e)}"),
+                       "http://example.com/live.m3u8")
+        XCTAssertEqual(CatchUp.liveURL(from: "http://example.com/live.m3u8?a=1&playseek=${(b)}-${(e)}&b=2"),
+                       "http://example.com/live.m3u8?a=1&b=2")
+        XCTAssertEqual(CatchUp.liveURL(from: "http://example.com/live.m3u8?a=1"),
+                       "http://example.com/live.m3u8?a=1")
+    }
+
+    func testTimeStringFormat() {
+        let value = CatchUp.timeString(Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(value.count, 14)
+        XCTAssertTrue(value.allSatisfy { $0.isNumber })
+    }
+}

@@ -218,6 +218,13 @@ final class PlayerController: NSObject, ObservableObject {
         if isPlaying { pause() } else { play() }
     }
 
+    /// 时移：在当前播放位置前后跳转，用于支持回看的频道。
+    func skip(by seconds: Double) {
+        guard seconds.isFinite, duration > 0 else { return }
+        let target = min(max(currentTime + seconds, 0), max(0, duration - 1))
+        seek(to: target)
+    }
+
     func seek(to seconds: Double) {
         guard seconds.isFinite, seconds >= 0, !isLive else { return }
         currentTime = seconds

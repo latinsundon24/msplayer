@@ -32,8 +32,9 @@ struct RootView: View {
     @State private var selectedTab: LeftTab = .channels
     @State private var currentGroup: ChannelGroup?
     @State private var lineIndex = 0
-    @State private var leftVisible = true
-    @State private var rightVisible = true
+    @State private var leftVisible = false
+    @State private var rightVisible = false
+    @State private var catchUpProgram: EPGProgram?
     @State private var activeSheet: MenuSheet?
     @State private var leftHideTask: Task<Void, Never>?
     @State private var rightHideTask: Task<Void, Never>?
@@ -53,9 +54,11 @@ struct RootView: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { toggleLeft() }
+                    .simultaneousGesture(swipeGesture)
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { toggleRight() }
+                    .simultaneousGesture(swipeGesture)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -64,7 +67,7 @@ struct RootView: View {
                     LeftPanel(
                         selectedTab: $selectedTab,
                         currentGroup: currentGroup,
-                        channel: player.currentChannel ?? currentGroup?.primary,
+                        channel: activeLineChannel ?? player.currentChannel ?? currentGroup?.primary,
                         now: now,
                         onSelectSource: { source in
                             store.select(source)
@@ -74,6 +77,9 @@ struct RootView: View {
                         },
                         onSelectGroup: { group in
                             play(group: group, line: 0)
+                        },
+                        onSelectProgram: { program in
+                            playCatchUp(program)
                         }
                     )
                     .frame(width: 300)
@@ -196,14 +202,36 @@ struct RootView: View {
         return (store.currentGroups.firstIndex(where: { $0.name == group.name }) ?? 0) + 1
     }
 
+    /// 当前线路的原始频道（保留回看模板，用于判断回看能力）。
+    private var activeLineChannel: Channel? {
+        guard let group = currentGroup, group.lines.indices.contains(lineIndex) else { return nil }
+        return group.lines[lineIndex]
+    }
+
+    private var supportsCatchUp: Bool {
+        activeLineChannel.map(CatchUp.supports) ?? false
+    }
+
     private var nowProgram: EPGProgram? {
+        if let catchUpProgram { return catchUpProgram }
         guard let channel = player.currentChannel ?? currentGroup?.primary else { return nil }
         return store.programInfo(for: channel, at: now).now
     }
 
     private var nextProgram: EPGProgram? {
-        guard let channel = player.currentChannel ?? currentGroup?.primary else { return nil }
+        let channel = activeLineChannel ?? player.currentChannel ?? currentGroup?.primary
+        if let catchUpProgram, let channel {
+            return store.program(after: catchUpProgram, for: channel)
+        }
+        guard let channel else { return nil }
         return store.programInfo(for: channel, at: now).next
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                handleSwipe(value.translation)
+            }
     }
 
     // MARK: - 行为
@@ -219,11 +247,7 @@ struct RootView: View {
         }
 
         let groups = store.currentGroups
-        guard !groups.isEmpty else {
-            leftVisible = true
-            rightVisible = true
-            return
-        }
+        guard !groups.isEmpty else { return }
 
         let restored = groups.first { $0.name == lastChannelName }
         currentGroup = restored ?? groups.first
@@ -239,9 +263,83 @@ struct RootView: View {
         currentGroup = group
         lineIndex = safeLine
         lastChannelName = group.name
+        catchUpProgram = nil
+
+        let source = group.lines[safeLine]
+        var playback = source
+        // 回看频道的直播地址去掉 playseek 模板，避免地址里的 ${...} 无法解析。
+        if CatchUp.supports(source) {
+            playback.url = CatchUp.liveURL(for: source)
+        }
 
         player.aspect = store.settings.aspect
-        player.open(channel: group.lines[safeLine])
+        player.open(channel: playback, lineIndex: safeLine)
+        scheduleAutoHide()
+    }
+
+    // MARK: - 滑动操作
+
+    private func handleSwipe(_ translation: CGSize) {
+        let horizontal = abs(translation.width) > abs(translation.height)
+        if horizontal {
+            if supportsCatchUp {
+                timeshift(by: translation.width > 0 ? 30 : -30)
+            } else {
+                switchLine(step: translation.width > 0 ? 1 : -1)
+            }
+        } else {
+            switchChannel(step: translation.height < 0 ? 1 : -1)
+        }
+    }
+
+    /// 上滑 +1，下滑 -1，循环切换。
+    private func switchChannel(step: Int) {
+        let groups = store.currentGroups
+        guard groups.count > 1 else { return }
+        let current = currentGroup.flatMap { group in
+            groups.firstIndex(where: { $0.name == group.name })
+        } ?? 0
+        let next = (current + step + groups.count) % groups.count
+        let target = groups[next]
+        let line = min(lineIndex, max(0, target.lines.count - 1))
+        play(group: target, line: line)
+    }
+
+    /// 右滑 +1，左滑 -1，循环切换。
+    private func switchLine(step: Int) {
+        guard let group = currentGroup, group.lines.count > 1 else { return }
+        let next = (lineIndex + step + group.lines.count) % group.lines.count
+        play(group: group, line: next)
+    }
+
+    /// 支持回看的频道：左右滑动做时移。
+    private func timeshift(by seconds: Double) {
+        guard player.duration > 0 else {
+            showBanner("当前为直播，先在「节目单」点选回看节目后再左右滑动时移")
+            return
+        }
+        player.skip(by: seconds)
+    }
+
+    /// 从节目单点选节目：用节目起止时间替换 playseek 模板后播放。
+    private func playCatchUp(_ program: EPGProgram) {
+        guard let group = currentGroup,
+              group.lines.indices.contains(lineIndex) else { return }
+        let source = group.lines[lineIndex]
+        let end = min(program.stop, Date())
+        guard let url = CatchUp.url(for: source, from: program.start, to: end) else {
+            showBanner("该频道不支持回看")
+            return
+        }
+
+        var playback = source
+        playback.url = url
+        currentGroup = group
+        lastChannelName = group.name
+        catchUpProgram = program
+
+        player.aspect = store.settings.aspect
+        player.open(channel: playback, lineIndex: lineIndex)
         scheduleAutoHide()
     }
 

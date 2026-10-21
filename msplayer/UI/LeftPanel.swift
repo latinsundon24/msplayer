@@ -11,6 +11,7 @@ struct LeftPanel: View {
     let now: Date
     let onSelectSource: (Source) -> Void
     let onSelectGroup: (ChannelGroup) -> Void
+    let onSelectProgram: (EPGProgram) -> Void
 
     @State private var search = ""
 
@@ -226,26 +227,64 @@ struct LeftPanel: View {
     // MARK: - 节目单
 
     private var epgList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 6) {
-                if store.epgSources.isEmpty {
-                    emptyHint("尚未订阅 EPG\n从右侧「EPG订阅」添加 XMLTV 地址")
-                } else if let channel, !store.upcomingPrograms(for: channel).isEmpty {
-                    ForEach(store.upcomingPrograms(for: channel)) { program in
-                        programRow(program)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    if store.epgSources.isEmpty {
+                        emptyHint("尚未订阅 EPG\n从右侧「EPG订阅」添加 XMLTV 地址")
+                    } else if let channel, !programs(for: channel).isEmpty {
+                        let canCatchUp = CatchUp.supports(channel)
+                        ForEach(programs(for: channel)) { program in
+                            programRow(program, canCatchUp: canCatchUp)
+                                .id(program.id)
+                        }
+                    } else {
+                        emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
                     }
-                } else {
-                    emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
                 }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            .onAppear { scrollToCurrent(proxy) }
+            .onChange(of: channel?.id) { _ in scrollToCurrent(proxy) }
         }
     }
 
-    private func programRow(_ program: EPGProgram) -> some View {
+    private func programs(for channel: Channel) -> [EPGProgram] {
+        let hoursBack: Double = CatchUp.supports(channel) ? 12 : 1
+        return store.programs(for: channel, hoursBack: hoursBack, hoursForward: 12)
+    }
+
+    private func scrollToCurrent(_ proxy: ScrollViewProxy) {
+        guard let channel else { return }
+        let list = programs(for: channel)
+        guard let target = list.first(where: { $0.isCurrent(at: now) })
+                ?? list.first(where: { $0.start > now })
+                ?? list.first else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(target.id, anchor: .center)
+        }
+    }
+
+    private func programRow(_ program: EPGProgram, canCatchUp: Bool) -> some View {
         let isNow = program.isCurrent(at: now)
-        return HStack(alignment: .top, spacing: 8) {
+        let available = canCatchUp && program.start <= now
+        return Group {
+            if available {
+                Button {
+                    onSelectProgram(program)
+                } label: {
+                    programRowContent(program, isNow: isNow, canCatchUp: true)
+                }
+                .buttonStyle(.plain)
+            } else {
+                programRowContent(program, isNow: isNow, canCatchUp: false)
+            }
+        }
+    }
+
+    private func programRowContent(_ program: EPGProgram, isNow: Bool, canCatchUp: Bool) -> some View {
+        HStack(alignment: .top, spacing: 8) {
             Text(EPGProgram.timeFormatter.string(from: program.start))
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundColor(isNow ? .red : .white.opacity(0.45))
@@ -266,13 +305,23 @@ struct LeftPanel: View {
 
             Spacer(minLength: 0)
 
-            if isNow {
-                Text("直播中")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.red)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.red.opacity(0.15)))
+            VStack(alignment: .trailing, spacing: 3) {
+                if isNow {
+                    Text("直播中")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.red.opacity(0.15)))
+                }
+                if canCatchUp {
+                    Text("回看")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.orange.opacity(0.16)))
+                }
             }
         }
         .padding(.vertical, 5)

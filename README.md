@@ -17,7 +17,10 @@
   - `#EXTVLCOPT:http-user-agent=…`、`#EXTVLCOPT:http-referrer=…` 及任意 `#EXTVLCOPT:http-*`
   - `http://…|User-Agent=…&Referer=…`
 - 同名频道自动归并为多线路，频道列表只显示一次
-- 播放后边栏自动隐藏；点击画面左侧切换左栏，点击右侧切换右栏
+- 启动进入播放界面时左右边栏都隐藏；点击画面左侧切换左栏，点击右侧切换右栏
+- 视频区滑动：上滑频道 +1、下滑频道 -1；右滑线路 +1、左滑线路 -1
+- 支持回看的频道：左右滑动改为时移（前后 30 秒），节目单中已开始的节目显示「回看」并可点播
+- 回看地址支持 `&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}` 模板（兼容 `${(b)}` / `${(e)}` 与 `&amp;`）
 - 底栏：序号、频道名称、进度条、线路、分辨率（4K / 1080P / 720P / 576P / 480P，按视频原始分辨率）、正在播放、下一节目
 - EPG：XMLTV 订阅，`tvg-id` 优先、频道名归一化匹配
 - DASH + ClearKey：内置解密管线（AES-CTR/CBCS → 去 CENC 信令 → 本地 fMP4 HLS），再交给当前解码器

@@ -231,14 +231,31 @@ final class Store: ObservableObject {
     }
 
     func upcomingPrograms(for channel: Channel, hours: Double = 12) -> [EPGProgram] {
+        programs(for: channel, hoursBack: 1, hoursForward: hours)
+    }
+
+    /// 节目单：默认展示过去 12 小时到未来 12 小时，便于回看。
+    func programs(for channel: Channel,
+                  hoursBack: Double = 12,
+                  hoursForward: Double = 12) -> [EPGProgram] {
         guard let database = epgDatabase,
               let key = EPGMatching.match(channel: channel, in: database),
               let list = database.programs[key] else {
             return []
         }
-        let from = Date().addingTimeInterval(-3600)
-        let to = Date().addingTimeInterval(hours * 3600)
+        let from = Date().addingTimeInterval(-hoursBack * 3600)
+        let to = Date().addingTimeInterval(hoursForward * 3600)
         return list.filter { $0.stop > from && $0.start < to }
+    }
+
+    /// 某节目之后的下一个节目（用于回看时显示「下一节目」）。
+    func program(after program: EPGProgram, for channel: Channel) -> EPGProgram? {
+        guard let database = epgDatabase,
+              let key = EPGMatching.match(channel: channel, in: database),
+              let list = database.programs[key] else {
+            return nil
+        }
+        return list.first { $0.start >= program.stop }
     }
 
     // MARK: - 持久化
