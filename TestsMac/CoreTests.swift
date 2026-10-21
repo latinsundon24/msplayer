@@ -351,4 +351,23 @@ final class CatchUpTests: XCTestCase {
                        "http://example.com/live/cctv1.m3u8?token=abc&playseek="
                        + "\(CatchUp.timeString(from))-\(CatchUp.timeString(to))")
     }
+
+    /// 运营商列表没有 catchup 标签，但地址本身支持 `&playseek=开始-结束`。
+    func testProviderPlayseekWithoutTags() {
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let to = Date(timeIntervalSince1970: 1_700_003_600)
+        let url = "http://120.87.19.109:80/PLTV/88888973/224/3221226352/"
+            + "10000100000000060000000001464824_0.smil/01.m3u8"
+            + "?fmt=ts2hls,244,01.m3u8&accountinfo=ABC+DEF/123,END&tenantId=8601"
+        let channel = Channel(name: "CCTV5", url: url)
+
+        XCTAssertTrue(CatchUp.supports(channel))
+        XCTAssertEqual(CatchUp.url(for: channel, from: from, to: to),
+                       url + "&playseek=\(CatchUp.timeString(from))-\(CatchUp.timeString(to))")
+    }
+
+    func testPlainChannelIsNotCatchUp() {
+        let channel = Channel(name: "X", url: "http://example.com/live/x.m3u8")
+        XCTAssertFalse(CatchUp.supports(channel))
+    }
 }

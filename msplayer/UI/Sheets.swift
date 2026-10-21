@@ -678,8 +678,8 @@ struct AboutSheet: View {
     @ObservedObject var player: PlayerController
 
     private var version: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "5"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "6"
         return "\(short) (\(build))"
     }
 

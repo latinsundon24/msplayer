@@ -22,7 +22,22 @@ enum CatchUp {
         if isEnabled(channel.catchUpMode) { return true }
         if let days = channel.catchUpDays, days > 0 { return true }
         if let source = channel.catchUpSource, !source.isEmpty { return true }
-        return supports(url: channel.url)
+        if supports(url: channel.url) { return true }
+        return looksLikeTimeShiftProvider(channel.url)
+    }
+
+    /// 没有 catchup 标签、但地址本身是常见 IPTV 时移平台的情况。
+    /// 例如 `…/PLTV/…/01.m3u8?…&accountinfo=…&tenantId=8601`，
+    /// 回看就是在地址末尾追加 `&playseek=开始-结束`。
+    static func looksLikeTimeShiftProvider(_ rawURL: String) -> Bool {
+        let url = normalized(rawURL).lowercased()
+        guard url.contains("://") else { return false }
+        if url.contains("playseek=") || url.contains("timeshift=") { return true }
+        if url.contains("/pltv/"),
+           url.contains("accountinfo=") || url.contains("tenantid=") || url.contains("fmt=ts2hls") {
+            return true
+        }
+        return false
     }
 
     static func supports(url: String) -> Bool {
@@ -58,6 +73,11 @@ enum CatchUp {
 
         if supports(url: channel.url) {
             return expand(channel.url, from: from, to: to)
+        }
+
+        // 无标签的常见 IPTV 时移平台：直播地址末尾加 playseek。
+        if looksLikeTimeShiftProvider(channel.url) {
+            return append("?playseek=\(begin)-\(end)", to: liveURL(for: channel))
         }
 
         if isEnabled(channel.catchUpMode) || (channel.catchUpDays ?? 0) > 0 {

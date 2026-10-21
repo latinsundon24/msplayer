@@ -29,9 +29,14 @@ final class Store: ObservableObject {
     private let parserVersionKey = "msplayer.parserVersion"
     /// 解析器版本：1.3 起支持 catchup-source 的 `?` / `&` 后缀。
     private static let parserVersion = 2
+    private let epgVersionKey = "msplayer.epgVersion"
+    /// EPG 缓存版本：1.5 起保留昨天一整天的节目。
+    private static let epgVersion = 2
 
     /// 升级后需要按新解析器重新解析已缓存的列表。
     private(set) var needsReparse = false
+    /// 升级后需要重新拉取 EPG，补全昨天的节目。
+    private(set) var needsEPGRefresh = false
 
     private init() {
         load()
@@ -134,24 +139,33 @@ final class Store: ObservableObject {
         }
     }
 
-    /// 升级后按新解析器重新解析缓存列表（当前列表优先）。
+    /// 升级后按新解析器重新解析缓存列表（当前列表优先），并补全 EPG。
     func reparseAfterUpgrade() async {
-        guard needsReparse else { return }
+        let reparseLists = needsReparse
+        let refreshEPG = needsEPGRefresh
         needsReparse = false
+        needsEPGRefresh = false
+        guard reparseLists || refreshEPG else { return }
 
-        var ordered: [Source] = []
-        if let current = currentSource,
-           current.kind == .remote || (current.kind == .local && current.content != nil) {
-            ordered.append(current)
+        if reparseLists {
+            var ordered: [Source] = []
+            if let current = currentSource,
+               current.kind == .remote || (current.kind == .local && current.content != nil) {
+                ordered.append(current)
+            }
+            for source in sources where source.kind == .remote || (source.kind == .local && source.content != nil) {
+                if !ordered.contains(where: { $0.id == source.id }) { ordered.append(source) }
+            }
+            for source in ordered {
+                await refresh(source)
+            }
+            if sources.contains(where: { $0.kind == .local && $0.content == nil }) {
+                lastError = "本地列表需要重新导入一次，才能使用新的回看解析"
+            }
         }
-        for source in sources where source.kind == .remote || (source.kind == .local && source.content != nil) {
-            if !ordered.contains(where: { $0.id == source.id }) { ordered.append(source) }
-        }
-        for source in ordered {
-            await refresh(source)
-        }
-        if sources.contains(where: { $0.kind == .local && $0.content == nil }) {
-            lastError = "本地列表需要重新导入一次，才能使用新的回看解析"
+
+        if refreshEPG {
+            await refreshAllEPG()
         }
     }
 
@@ -239,7 +253,7 @@ final class Store: ObservableObject {
             for name in names where !merged.contains(name) { merged.append(name) }
             base.channelNames[id] = merged
         }
-        let cutoff = Calendar.current.startOfDay(for: Date())
+        let cutoff = Calendar.current.startOfDay(for: Date().addingTimeInterval(-24 * 3600))
         let limit = Date().addingTimeInterval(48 * 3600)
         for (id, programs) in incoming.programs {
             var list = base.programs[id] ?? []
@@ -324,6 +338,10 @@ final class Store: ObservableObject {
         if let data = defaults.data(forKey: epgSourcesKey),
            let list = try? JSONDecoder().decode([EPGSource].self, from: data) {
             epgSources = list
+        }
+        if defaults.integer(forKey: epgVersionKey) < Store.epgVersion {
+            needsEPGRefresh = !epgSources.isEmpty
+            defaults.set(Store.epgVersion, forKey: epgVersionKey)
         }
         if let data = defaults.data(forKey: epgKey),
            let database = try? JSONDecoder().decode(EPGDatabase.self, from: data) {

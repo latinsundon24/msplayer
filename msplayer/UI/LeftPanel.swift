@@ -16,6 +16,7 @@ struct LeftPanel: View {
     let onCatchUpFrom: (Date) -> Void
 
     @State private var search = ""
+    @State private var epgDayOffset = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -243,6 +244,7 @@ struct LeftPanel: View {
                     if catchUpAvailable {
                         catchUpBar
                     }
+                    dayBar
                     if store.epgSources.isEmpty {
                         if catchUpAvailable {
                             emptyHint("尚未订阅 EPG\n可直接用上方「快速回看」，或从右侧「EPG订阅」添加 XMLTV 地址")
@@ -266,6 +268,7 @@ struct LeftPanel: View {
             }
             .onAppear { scrollToCurrent(proxy) }
             .onChange(of: channel?.id) { _ in scrollToCurrent(proxy) }
+            .onChange(of: epgDayOffset) { _ in scrollToCurrent(proxy) }
         }
     }
 
@@ -274,38 +277,78 @@ struct LeftPanel: View {
         return currentGroup?.lines.contains(where: { CatchUp.supports($0) }) ?? false
     }
 
-    /// 不依赖 EPG 的快速回看：从 30 分钟 / 1 小时 / 2 小时 / 6 小时前播到现在。
+    /// 不依赖 EPG 的快速回看：从 30 分钟 / 1 小时 / 2 小时 / 6 小时 / 24 小时 / 48 小时前播到现在。
     private var catchUpBar: some View {
-        HStack(spacing: 5) {
+        VStack(alignment: .leading, spacing: 3) {
             Text("快速回看")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(.white.opacity(0.45))
-            ForEach([30, 60, 120, 360], id: \.self) { minutes in
-                Button {
-                    onCatchUpFrom(Date().addingTimeInterval(-Double(minutes) * 60))
-                } label: {
-                    Text(minutes < 60 ? "\(minutes)分前" : "\(minutes / 60)时前")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.cyan)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.cyan.opacity(0.14)))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach([30, 60, 120, 360, 1440, 2880], id: \.self) { minutes in
+                        Button {
+                            onCatchUpFrom(Date().addingTimeInterval(-Double(minutes) * 60))
+                        } label: {
+                            Text(minutes < 60 ? "\(minutes)分前" : "\(minutes / 60)时前")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(.cyan)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.cyan.opacity(0.14)))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
             }
-            Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
     }
 
+    private var dayBar: some View {
+        HStack(spacing: 6) {
+            dayButton("昨天", offset: -1)
+            dayButton("今天", offset: 0)
+            Spacer(minLength: 0)
+            Text(dayTitle)
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.35))
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func dayButton(_ title: String, offset: Int) -> some View {
+        Button {
+            epgDayOffset = offset
+        } label: {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(epgDayOffset == offset ? .black : .white.opacity(0.6))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(epgDayOffset == offset ? Color.cyan : Color.white.opacity(0.08))
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var dayTitle: String {
+        let date = Calendar.current.date(byAdding: .day, value: epgDayOffset, to: now) ?? now
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日 EEEE"
+        return formatter.string(from: date)
+    }
+
     private func programs(for channel: Channel) -> [EPGProgram] {
-        // 节目单展示完整一天：今天 00:00 到 24:00。
+        // 节目单按整天展示：昨天 / 今天各自 00:00 到 24:00。
         let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: now)
+        let reference = calendar.date(byAdding: .day, value: epgDayOffset, to: now) ?? now
+        let dayStart = calendar.startOfDay(for: reference)
         let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)
-            ?? now.addingTimeInterval(12 * 3600)
-        let back = max(0, now.timeIntervalSince(dayStart) / 3600)
-        let forward = max(0.5, dayEnd.timeIntervalSince(now) / 3600)
+            ?? reference.addingTimeInterval(12 * 3600)
+        let back = now.timeIntervalSince(dayStart) / 3600
+        let forward = dayEnd.timeIntervalSince(now) / 3600
         return store.programs(for: channel, hoursBack: back, hoursForward: forward)
     }
 
@@ -410,8 +453,8 @@ struct LeftPanel: View {
     }
 
     private var appVersion: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "5"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "6"
         return "v\(short)(\(build))"
     }
 
