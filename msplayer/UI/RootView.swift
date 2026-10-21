@@ -129,6 +129,9 @@ struct RootView: View {
             guard let message else { return }
             showBanner(message)
         }
+        .onChange(of: store.settings.aspect) { aspect in
+            player.aspect = aspect
+        }
         .onDisappear {
             hideTask?.cancel()
             bannerTask?.cancel()
