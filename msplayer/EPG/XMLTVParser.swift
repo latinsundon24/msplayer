@@ -188,9 +188,9 @@ enum EPGMatching {
 extension EPGDatabase {
     func nowNext(channelID id: String, at date: Date) -> (now: EPGProgram?, next: EPGProgram?) {
         guard let list = programs[id] else { return (nil, nil) }
-        let current = list.first { .start <= date && date < .stop }
+        let current = list.first { $0.start <= date && date < $0.stop }
         let nextStart = current?.stop ?? date
-        let next = list.first { .start >= nextStart }
+        let next = list.first { $0.start >= nextStart }
         return (current, next)
     }
 }
