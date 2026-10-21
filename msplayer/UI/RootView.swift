@@ -343,21 +343,28 @@ struct RootView: View {
         scheduleAutoHide()
     }
 
+    /// 左右栏互斥：显示一个时自动隐藏另一个。
     private func toggleLeft() {
-        leftVisible.toggle()
         if leftVisible {
-            scheduleLeftHide()
-        } else {
+            leftVisible = false
             leftHideTask?.cancel()
+        } else {
+            rightVisible = false
+            rightHideTask?.cancel()
+            leftVisible = true
+            scheduleLeftHide()
         }
     }
 
     private func toggleRight() {
-        rightVisible.toggle()
         if rightVisible {
-            scheduleRightHide()
-        } else {
+            rightVisible = false
             rightHideTask?.cancel()
+        } else {
+            leftVisible = false
+            leftHideTask?.cancel()
+            rightVisible = true
+            scheduleRightHide()
         }
     }
 
