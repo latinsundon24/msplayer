@@ -22,6 +22,24 @@ enum HTTPService {
         }
     }
 
+    /// 跨线程传递一次结果（Task 内写入，等待后读取）
+    final class ResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Result<Response, Error>?
+
+        func set(_ value: Result<Response, Error>) {
+            lock.lock()
+            stored = value
+            lock.unlock()
+        }
+
+        var value: Result<Response, Error>? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+    }
+
     struct Response {
         let data: Data
         let status: Int
@@ -86,18 +104,21 @@ enum HTTPService {
     /// 同步拉数据（在后台线程调用）
     static func fetchSyncData(_ urlString: String, headers: [String: String] = [:]) throws -> Response {
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<Response, Error>!
+        let box = ResultBox()
 
         Task {
             do {
                 let response = try await fetch(urlString, headers: headers)
-                result = .success(response)
+                box.set(.success(response))
             } catch {
-                result = .failure(error)
+                box.set(.failure(error))
             }
             semaphore.signal()
         }
         semaphore.wait()
+        guard let result = box.value else {
+            throw Failure.transport("请求未完成")
+        }
         return try result.get()
     }
 
@@ -177,15 +198,6 @@ enum HTTPService {
 
     /// UTF-8 优先，失败回退 GB18030（兼容中文列表）
     static func decode(_ data: Data) -> String {
-        if let s = String(data: data, encoding: .utf8) {
-            return s
-        }
-        let gbRaw = CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
-        )
-        if let s = String(data: data, encoding: String.Encoding(rawValue: gbRaw)) {
-            return s
-        }
-        return String(decoding: data, as: UTF8.self)
+        TextDecoding.decode(data)
     }
 }

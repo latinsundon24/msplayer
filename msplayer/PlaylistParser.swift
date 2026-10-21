@@ -15,7 +15,7 @@ import Foundation
 enum PlaylistParser {
 
     static func parse(data: Data) -> [Channel] {
-        parse(HTTPService.decode(data))
+        parse(TextDecoding.decode(data))
     }
 
     static func parse(_ content: String) -> [Channel] {

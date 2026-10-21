@@ -595,13 +595,13 @@ final class DashPlayback {
 
     private func syncFetch(_ url: URL, attempts: Int) -> Data? {
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Data?
+        let box = SegmentBox()
         Task {
             for attempt in 0..<max(1, attempts) {
-                if stopped { break }
+                if self.stopped { break }
                 do {
                     let response = try await HTTPService.fetch(url.absoluteString, headers: self.channel.headers)
-                    result = response.data
+                    box.set(response.data)
                     break
                 } catch {
                     if attempt + 1 < attempts {
@@ -612,7 +612,7 @@ final class DashPlayback {
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + 25)
-        return result
+        return box.value
     }
 
     private func cachedSegment(_ name: String) -> Data? {
@@ -635,5 +635,23 @@ final class DashPlayback {
                 total -= removed.count
             }
         }
+    }
+}
+
+/// 跨线程传递一次分片数据
+final class SegmentBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Data?
+
+    func set(_ data: Data) {
+        lock.lock()
+        stored = data
+        lock.unlock()
+    }
+
+    var value: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }

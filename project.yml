@@ -72,7 +72,6 @@ targets:
     sources:
       - path: msplayer/Models.swift
       - path: msplayer/PlaylistParser.swift
-      - path: msplayer/HTTPService.swift
       - path: msplayer/Support
       - path: msplayer/EPG
       - path: TestsMac
