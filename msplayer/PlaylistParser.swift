@@ -55,10 +55,11 @@ enum PlaylistParser {
             if let mode = value(of: "catchup", in: attrs), !mode.isEmpty {
                 pendingCatchUp = mode
             }
-            if let source = value(of: "catchup-source", in: attrs), !source.isEmpty {
+            if let source = firstValue(["catchup-source", "catchup_source", "catchupsource"], in: attrs),
+               !source.isEmpty {
                 pendingCatchUpSource = source
             }
-            if let days = value(of: "catchup-days", in: attrs) ?? value(of: "timeshift", in: attrs),
+            if let days = firstValue(["catchup-days", "catchup_days", "catchupdays", "timeshift"], in: attrs),
                let value = Int(days.trimmingCharacters(in: .whitespaces)) {
                 pendingCatchUpDays = value
             }
@@ -72,7 +73,7 @@ enum PlaylistParser {
                 pendingCatchUp = nil
                 pendingCatchUpSource = nil
                 pendingCatchUpDays = nil
-                if let comma = line.firstIndex(of: ",") {
+                if let comma = extinfSeparator(in: line) {
                     let title = String(line[line.index(after: comma)...]).trimmingCharacters(in: .whitespaces)
                     if !title.isEmpty { pendingName = title }
                     let attrs = String(line[line.startIndex..<comma])
@@ -349,9 +350,9 @@ enum PlaylistParser {
         return u.isEmpty ? url : u
     }
 
-    /// 取属性值，如 group-title="xxx"（也兼容单引号写法）
+    /// 取属性值，如 group-title="xxx"（兼容单引号与无引号写法）
     static func value(of key: String, in line: String) -> String? {
-        for pattern in [key + "=\"([^\"]*)\"", key + "='([^']*)'"] {
+        for pattern in [key + "=\"([^\"]*)\"", key + "='([^']*)'", key + "=([^\\s,]+)"] {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                 continue
             }
@@ -362,6 +363,33 @@ enum PlaylistParser {
                 continue
             }
             return ns.substring(with: match.range(at: 1))
+        }
+        return nil
+    }
+
+    static func firstValue(_ keys: [String], in line: String) -> String? {
+        for key in keys {
+            if let value = value(of: key, in: line), !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    /// `#EXTINF:…,频道名` 的分隔逗号；忽略引号里的逗号。
+    static func extinfSeparator(in line: String) -> String.Index? {
+        var quote: Character?
+        var index = line.startIndex
+        while index < line.endIndex {
+            let character = line[index]
+            if character == "\"" || character == "'" {
+                if quote == nil {
+                    quote = character
+                } else if quote == character {
+                    quote = nil
+                }
+            } else if character == ",", quote == nil {
+                return index
+            }
+            index = line.index(after: index)
         }
         return nil
     }

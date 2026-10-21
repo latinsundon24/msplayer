@@ -84,6 +84,9 @@ struct RootView: View {
                         },
                         onSelectProgram: { program in
                             playCatchUp(program)
+                        },
+                        onCatchUpFrom: { start in
+                            playCatchUp(from: start, to: Date())
                         }
                     )
                     .frame(width: 300)
@@ -210,7 +213,16 @@ struct RootView: View {
     }
 
     private var supportsCatchUp: Bool {
-        activeLineChannel.map(CatchUp.supports) ?? false
+        catchUpLine(in: currentGroup) != nil
+    }
+
+    /// 当前线路优先；当前线路不支持时，在同频道其他线路里找一条支持回看的。
+    private func catchUpLine(in group: ChannelGroup?) -> Int? {
+        guard let group else { return nil }
+        if group.lines.indices.contains(lineIndex), CatchUp.supports(group.lines[lineIndex]) {
+            return lineIndex
+        }
+        return group.lines.firstIndex(where: { CatchUp.supports($0) })
     }
 
     private var nowProgram: EPGProgram? {
@@ -324,24 +336,47 @@ struct RootView: View {
 
     /// 从节目单点选节目：用节目起止时间替换 playseek 模板后播放。
     private func playCatchUp(_ program: EPGProgram) {
-        guard let group = currentGroup,
-              group.lines.indices.contains(lineIndex) else { return }
-        let source = group.lines[lineIndex]
         let end = min(program.stop, Date())
-        guard let url = CatchUp.url(for: source, from: program.start, to: end) else {
+        if playCatchUp(from: program.start, to: end) {
+            catchUpProgram = program
+        }
+    }
+
+    /// 从指定时间回看到 `end`；成功返回 true。
+    @discardableResult
+    private func playCatchUp(from start: Date, to end: Date) -> Bool {
+        guard let group = currentGroup,
+              let line = catchUpLine(in: group),
+              group.lines.indices.contains(line) else {
             showBanner("该频道不支持回看")
-            return
+            return false
+        }
+
+        let source = group.lines[line]
+        guard let url = CatchUp.url(for: source, from: start, to: end) else {
+            showBanner("该频道不支持回看")
+            return false
         }
 
         var playback = source
         playback.url = url
         currentGroup = group
+        lineIndex = line
         lastChannelName = group.name
-        catchUpProgram = program
+        catchUpProgram = nil
 
         player.aspect = store.settings.aspect
-        player.open(channel: playback, lineIndex: lineIndex)
+        player.open(channel: playback, lineIndex: line)
+        showBanner("回看 \(clockText(start)) – \(clockText(end))")
         scheduleAutoHide()
+        return true
+    }
+
+    private func clockText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     /// 左右栏互斥：显示一个时自动隐藏另一个。

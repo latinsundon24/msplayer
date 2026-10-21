@@ -52,7 +52,8 @@ enum CatchUp {
             if expanded.contains("://") {
                 return expanded
             }
-            return append(expanded, to: channel.url)
+            // 直播地址本身若带旧的 playseek 模板，先去掉再拼，避免出现两个 playseek。
+            return append(expanded, to: liveURL(for: channel))
         }
 
         if supports(url: channel.url) {

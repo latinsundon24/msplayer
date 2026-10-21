@@ -2,7 +2,7 @@
 
 横屏 iOS 直播播放器（SwiftUI），同时集成 **系统原生解码（AVPlayer）** 与 **VLC（MobileVLCKit）**，可在「解码更换」中切换或自动兜底。
 
-当前版本：**1.2 (3)**（左栏底部与「关于应用」均可查看，便于确认安装的是哪一版）。
+当前版本：**1.3 (4)**（左栏底部与「关于应用」均可查看，便于确认安装的是哪一版）。
 
 > 独立项目：包名 `com.msplayer.app`，与任何其他工程无关联。
 
@@ -23,7 +23,8 @@
 - 视频区滑动：上滑频道 +1、下滑频道 -1；右滑线路 +1、左滑线路 -1
 - 支持回看的频道：左右滑动改为时移（前后 30 秒），节目单中已开始的节目显示「回看」并可点播
 - 回看地址支持 `&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}` 模板（兼容 `${(b)}` / `${(e)}` 与 `&amp;`）
-- 识别 m3u 回看标签：`catchup`、`catchup-source`、`catchup-days`、`timeshift`；支持完整回看地址、`?playseek=…` 后缀追加、`{utc}` / `${start}` 等占位符；频道列表与节目单会显示「回看」
+- 识别 m3u 回看标签：`catchup`、`catchup-source`、`catchup-days`、`timeshift`（兼容 `catchup_source` / 无引号 / 属性值含逗号）；支持完整回看地址、`?playseek=…` 与 `&playseek=…` 后缀追加、`{utc}` / `${start}` 等占位符；频道列表与节目单会显示「回看」
+- 没有 EPG 也能回看：节目单顶部提供「快速回看」（30 分钟 / 1 小时 / 2 小时 / 6 小时前）
 - 底栏：序号、频道名称、进度条、线路、分辨率（4K / 1080P / 720P / 576P / 480P，按视频原始分辨率）、正在播放、下一节目
 - EPG：XMLTV 订阅，`tvg-id` 优先、频道名归一化匹配
 - DASH + ClearKey：内置解密管线（AES-CTR/CBCS → 去 CENC 信令 → 本地 fMP4 HLS），再交给当前解码器
@@ -46,7 +47,7 @@
 2. `pod install`（MobileVLCKit）
 3. macOS 单元测试（解析器 / 归并 / 分辨率 / XMLTV）
 4. iOS device Release 未签名构建
-5. 打包 `msplayer-1.2-unsigned.ipa` 并上传 artifact
+5. 打包 `msplayer-1.3-unsigned.ipa` 并上传 artifact
 
 本地（macOS）构建：
 

@@ -12,6 +12,8 @@ struct LeftPanel: View {
     let onSelectSource: (Source) -> Void
     let onSelectGroup: (ChannelGroup) -> Void
     let onSelectProgram: (EPGProgram) -> Void
+    /// 无 EPG 时的快速回看：从指定时间播到当前时间。
+    let onCatchUpFrom: (Date) -> Void
 
     @State private var search = ""
 
@@ -238,20 +240,25 @@ struct LeftPanel: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
+                    if catchUpAvailable {
+                        catchUpBar
+                    }
                     if store.epgSources.isEmpty {
-                        emptyHint("尚未订阅 EPG\n从右侧「EPG订阅」添加 XMLTV 地址")
+                        if catchUpAvailable {
+                            emptyHint("尚未订阅 EPG\n可直接用上方「快速回看」，或从右侧「EPG订阅」添加 XMLTV 地址")
+                        } else {
+                            emptyHint("尚未订阅 EPG\n从右侧「EPG订阅」添加 XMLTV 地址")
+                        }
                     } else if let channel, !programs(for: channel).isEmpty {
-                        let canCatchUp = CatchUp.supports(channel)
+                        let canCatchUp = catchUpAvailable
                         ForEach(programs(for: channel)) { program in
                             programRow(program, canCatchUp: canCatchUp)
                                 .id(program.id)
                         }
+                    } else if catchUpAvailable {
+                        emptyHint("已识别该频道的回看标签，但暂无节目单数据\n可用上方「快速回看」，或在「EPG订阅」添加 XMLTV 源")
                     } else {
-                        if let channel, CatchUp.supports(channel) {
-                            emptyHint("该频道支持回看，但暂无节目单数据\n请在「EPG订阅」添加或刷新 XMLTV 源")
-                        } else {
-                            emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
-                        }
+                        emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -262,8 +269,37 @@ struct LeftPanel: View {
         }
     }
 
+    private var catchUpAvailable: Bool {
+        if let channel, CatchUp.supports(channel) { return true }
+        return currentGroup?.lines.contains(where: { CatchUp.supports($0) }) ?? false
+    }
+
+    /// 不依赖 EPG 的快速回看：从 30 分钟 / 1 小时 / 2 小时 / 6 小时前播到现在。
+    private var catchUpBar: some View {
+        HStack(spacing: 5) {
+            Text("快速回看")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.white.opacity(0.45))
+            ForEach([30, 60, 120, 360], id: \.self) { minutes in
+                Button {
+                    onCatchUpFrom(Date().addingTimeInterval(-Double(minutes) * 60))
+                } label: {
+                    Text(minutes < 60 ? "\(minutes)分前" : "\(minutes / 60)时前")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.cyan)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.cyan.opacity(0.14)))
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+    }
+
     private func programs(for channel: Channel) -> [EPGProgram] {
-        let hoursBack: Double = CatchUp.supports(channel) ? 12 : 1
+        let hoursBack: Double = catchUpAvailable ? 12 : 1
         return store.programs(for: channel, hoursBack: hoursBack, hoursForward: 12)
     }
 
@@ -368,8 +404,8 @@ struct LeftPanel: View {
     }
 
     private var appVersion: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "3"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "4"
         return "v\(short)(\(build))"
     }
 

@@ -133,6 +133,35 @@ final class PlaylistParserTests: XCTestCase {
         XCTAssertEqual(channels[1].catchUpDays, 3)
         XCTAssertTrue(CatchUp.supports(channels[1]))
     }
+
+    func testCatchUpTagWithCommaInGroupTitle() {
+        let text = """
+        #EXTM3U
+        #EXTINF:-1 tvg-id="cctv1" group-title="央视,综合" catchup="append" catchup-source="?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}",CCTV-1 综合
+        http://example.com/live/cctv1.m3u8
+        """
+
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels.count, 1)
+        XCTAssertEqual(channels[0].name, "CCTV-1 综合")
+        XCTAssertEqual(channels[0].group, "央视,综合")
+        XCTAssertEqual(channels[0].catchUpSource, "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}")
+        XCTAssertTrue(CatchUp.supports(channels[0]))
+    }
+
+    func testCatchUpUnderscoreKeys() {
+        let text = """
+        #EXTM3U
+        #EXTINF:-1 catchup="append" catchup_source="&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}" catchup_days="3",CCTV-2
+        http://example.com/live/cctv2.m3u8
+        """
+
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels.count, 1)
+        XCTAssertEqual(channels[0].catchUpDays, 3)
+        XCTAssertEqual(channels[0].catchUpSource, "&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}")
+        XCTAssertTrue(CatchUp.supports(channels[0]))
+    }
 }
 
 final class ResolutionLabelTests: XCTestCase {
@@ -295,5 +324,31 @@ final class CatchUpTests: XCTestCase {
                        "http://example.com/x?start=1700000000&end=1700003600")
         XCTAssertEqual(CatchUp.expand("http://example.com/x?start=${start}&end=${end}", from: from, to: to),
                        "http://example.com/x?start=1700000000&end=1700003600")
+    }
+
+    func testAmpersandSuffixAddsQuestionMark() {
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let to = Date(timeIntervalSince1970: 1_700_003_600)
+        let channel = Channel(name: "CCTV-1",
+                              url: "http://example.com/live/cctv1.m3u8",
+                              catchUpMode: "append",
+                              catchUpSource: "&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}")
+
+        XCTAssertEqual(CatchUp.url(for: channel, from: from, to: to),
+                       "http://example.com/live/cctv1.m3u8?playseek="
+                       + "\(CatchUp.timeString(from))-\(CatchUp.timeString(to))")
+    }
+
+    func testQuestionSuffixWithExistingQuery() {
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let to = Date(timeIntervalSince1970: 1_700_003_600)
+        let channel = Channel(name: "CCTV-1",
+                              url: "http://example.com/live/cctv1.m3u8?token=abc",
+                              catchUpMode: "append",
+                              catchUpSource: "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}")
+
+        XCTAssertEqual(CatchUp.url(for: channel, from: from, to: to),
+                       "http://example.com/live/cctv1.m3u8?token=abc&playseek="
+                       + "\(CatchUp.timeString(from))-\(CatchUp.timeString(to))")
     }
 }
