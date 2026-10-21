@@ -35,6 +35,15 @@ struct Channel: Codable, Identifiable, Hashable {
     /// 来自 #EXTVLCOPT / stream_headers
     var headers: [String: String] = [:]
 
+    /// m3u 回看标签：catchup="default" / "append" / "shift" …
+    var catchUpMode: String? = nil
+
+    /// catchup-source 模板（可能是完整地址，也可能只是 ?playseek=… 后缀）
+    var catchUpSource: String? = nil
+
+    /// catchup-days / timeshift：可回看天数
+    var catchUpDays: Int? = nil
+
     var isDASH: Bool {
         if manifestType == .dash { return true }
         if manifestType == .hls { return false }

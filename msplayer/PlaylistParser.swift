@@ -31,6 +31,9 @@ enum PlaylistParser {
         var licenseURL: String?
         var keys: [String: String] = [:]
         var headers: [String: String] = [:]
+        var pendingCatchUp: String?
+        var pendingCatchUpSource: String?
+        var pendingCatchUpDays: Int?
 
         let normalized = content
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -48,11 +51,27 @@ enum PlaylistParser {
             headers = [:]
         }
 
+        func applyCatchUpAttrs(_ attrs: String) {
+            if let mode = value(of: "catchup", in: attrs), !mode.isEmpty {
+                pendingCatchUp = mode
+            }
+            if let source = value(of: "catchup-source", in: attrs), !source.isEmpty {
+                pendingCatchUpSource = source
+            }
+            if let days = value(of: "catchup-days", in: attrs) ?? value(of: "timeshift", in: attrs),
+               let value = Int(days.trimmingCharacters(in: .whitespaces)) {
+                pendingCatchUpDays = value
+            }
+        }
+
         for raw in rawLines {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
 
             if line.uppercased().hasPrefix("#EXTINF") {
+                pendingCatchUp = nil
+                pendingCatchUpSource = nil
+                pendingCatchUpDays = nil
                 if let comma = line.firstIndex(of: ",") {
                     let title = String(line[line.index(after: comma)...]).trimmingCharacters(in: .whitespaces)
                     if !title.isEmpty { pendingName = title }
@@ -62,11 +81,13 @@ enum PlaylistParser {
                     if let id = value(of: "tvg-id", in: attrs), !id.isEmpty { pendingTVGID = id }
                     if let n = value(of: "tvg-name", in: attrs), !n.isEmpty { pendingTVGName = n }
                     if pendingName == nil { pendingName = pendingTVGName }
+                    applyCatchUpAttrs(attrs)
                 } else {
                     let attrs = line
                     if let g = value(of: "group-title", in: attrs), !g.isEmpty { pendingGroup = g }
                     if let id = value(of: "tvg-id", in: attrs), !id.isEmpty { pendingTVGID = id }
                     if let n = value(of: "tvg-name", in: attrs), !n.isEmpty { pendingName = n }
+                    applyCatchUpAttrs(attrs)
                 }
                 resetMeta()
                 continue
@@ -148,7 +169,10 @@ enum PlaylistParser {
                                   licenseType: licenseType,
                                   keys: keys,
                                   licenseURL: licenseURL,
-                                  headers: mergedHeaders)
+                                  headers: mergedHeaders,
+                                  catchUpMode: pendingCatchUp,
+                                  catchUpSource: pendingCatchUpSource,
+                                  catchUpDays: pendingCatchUpDays)
             out.append(channel)
 
             pendingName = nil
@@ -156,6 +180,9 @@ enum PlaylistParser {
             pendingLogo = nil
             pendingTVGID = nil
             pendingTVGName = nil
+            pendingCatchUp = nil
+            pendingCatchUpSource = nil
+            pendingCatchUpDays = nil
             resetMeta()
         }
 
@@ -322,18 +349,21 @@ enum PlaylistParser {
         return u.isEmpty ? url : u
     }
 
-    /// 取属性值，如 group-title="xxx"
+    /// 取属性值，如 group-title="xxx"（也兼容单引号写法）
     static func value(of key: String, in line: String) -> String? {
-        let pattern = key + "=\"([^\"]*)\""
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return nil
+        for pattern in [key + "=\"([^\"]*)\"", key + "='([^']*)'"] {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                continue
+            }
+            let ns = line as NSString
+            let range = NSRange(location: 0, length: ns.length)
+            guard let match = regex.firstMatch(in: line, options: [], range: range),
+                  match.numberOfRanges > 1 else {
+                continue
+            }
+            return ns.substring(with: match.range(at: 1))
         }
-        let ns = line as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else {
-            return nil
-        }
-        return ns.substring(with: match.range(at: 1))
+        return nil
     }
 }
 

@@ -202,6 +202,14 @@ struct LeftPanel: View {
 
                 Spacer(minLength: 4)
 
+                if group.lines.contains(where: { CatchUp.supports($0) }) {
+                    Text("回看")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.orange.opacity(0.16)))
+                }
                 if group.lineCount > 1 {
                     Text("\(group.lineCount) 线路")
                         .font(.system(size: 9, weight: .semibold))
@@ -239,7 +247,11 @@ struct LeftPanel: View {
                                 .id(program.id)
                         }
                     } else {
-                        emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
+                        if let channel, CatchUp.supports(channel) {
+                            emptyHint("该频道支持回看，但暂无节目单数据\n请在「EPG订阅」添加或刷新 XMLTV 源")
+                        } else {
+                            emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -356,8 +368,8 @@ struct LeftPanel: View {
     }
 
     private var appVersion: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "3"
         return "v\(short)(\(build))"
     }
 
