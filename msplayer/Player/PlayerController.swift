@@ -69,8 +69,9 @@ final class PlayerController: NSObject, ObservableObject {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
+            guard let self else { return }
             Task { @MainActor in
-                self?.handleSystemTick(time)
+                self.handleSystemTick(time)
             }
         }
 
@@ -306,8 +307,9 @@ final class PlayerController: NSObject, ObservableObject {
         statusObserver?.invalidate()
 
         statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard let self else { return }
             Task { @MainActor in
-                guard let self, item === self.avPlayer.currentItem else { return }
+                guard item === self.avPlayer.currentItem else { return }
                 if item.status == .failed { self.reportSystemError(item) }
                 if item.status == .readyToPlay { self.onPlaybackStarted?() }
             }
@@ -318,8 +320,9 @@ final class PlayerController: NSObject, ObservableObject {
             object: item,
             queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.reportSystemError(item)
+                self.reportSystemError(item)
             }
         }
 
@@ -328,8 +331,9 @@ final class PlayerController: NSObject, ObservableObject {
             object: item,
             queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.onEnded?()
+                self.onEnded?()
             }
         }
 
@@ -541,7 +545,7 @@ extension PlayerController: VLCMediaPlayerDelegate {
             guard let self, self.backend == .vlc,
                   let player = self.vlcPlayer as? VLCMediaPlayer else { return }
             self.currentTime = max(0, Double(player.time.intValue) / 1000)
-            let length = Double(player.media.length.intValue) / 1000
+            let length = player.media.map { Double($0.length.intValue) / 1000 } ?? 0
             if length > 0 {
                 self.duration = length
                 self.isLive = false
