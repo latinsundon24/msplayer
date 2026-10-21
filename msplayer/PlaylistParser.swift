@@ -22,6 +22,7 @@ enum PlaylistParser {
         var out: [Channel] = []
         var pendingName: String?
         var pendingGroup: String?
+        var sectionGroup: String?
         var pendingLogo: String?
         var pendingTVGID: String?
         var pendingTVGName: String?
@@ -100,7 +101,7 @@ enum PlaylistParser {
 
             // TXT 分类标记：分类名,#genre#
             if let genre = genreGroup(from: line) {
-                pendingGroup = genre
+                sectionGroup = genre
                 continue
             }
 
@@ -133,7 +134,9 @@ enum PlaylistParser {
                 mergedHeaders[k] = v
             }
 
-            let group = (pendingGroup?.isEmpty == false) ? pendingGroup! : "默认"
+            let group = (pendingGroup?.isEmpty == false)
+                ? pendingGroup!
+                : ((sectionGroup?.isEmpty == false) ? sectionGroup! : "默认")
             let finalName = (name?.isEmpty == false) ? name! : deriveName(url)
 
             let channel = Channel(name: finalName,
