@@ -17,7 +17,7 @@
   - `#EXTVLCOPT:http-user-agent=…`、`#EXTVLCOPT:http-referrer=…` 及任意 `#EXTVLCOPT:http-*`
   - `http://…|User-Agent=…&Referer=…`
 - 同名频道自动归并为多线路，频道列表只显示一次
-- 播放后边栏自动隐藏，点击画面唤出
+- 播放后边栏自动隐藏；点击画面左侧切换左栏，点击右侧切换右栏
 - 底栏：序号、频道名称、进度条、线路、分辨率（4K / 1080P / 720P / 576P / 480P，按视频原始分辨率）、正在播放、下一节目
 - EPG：XMLTV 订阅，`tvg-id` 优先、频道名归一化匹配
 - DASH + ClearKey：内置解密管线（AES-CTR/CBCS → 去 CENC 信令 → 本地 fMP4 HLS），再交给当前解码器

@@ -501,7 +501,7 @@ struct DisplaySheet: View {
                 }
                 .toggleStyle(SwitchToggleStyle(tint: .cyan))
 
-                Text("点击画面可显示/隐藏边栏；底栏包含序号、频道、线路、分辨率、进度与节目信息。")
+                Text("点击画面左侧切换左栏，点击右侧切换右栏；播放后边栏会自动隐藏。底栏包含序号、频道、线路、分辨率、进度与节目信息。")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.35))
             }

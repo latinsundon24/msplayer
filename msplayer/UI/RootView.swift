@@ -32,9 +32,11 @@ struct RootView: View {
     @State private var selectedTab: LeftTab = .channels
     @State private var currentGroup: ChannelGroup?
     @State private var lineIndex = 0
-    @State private var overlayVisible = true
+    @State private var leftVisible = true
+    @State private var rightVisible = true
     @State private var activeSheet: MenuSheet?
-    @State private var hideTask: Task<Void, Never>?
+    @State private var leftHideTask: Task<Void, Never>?
+    @State private var rightHideTask: Task<Void, Never>?
     @State private var now = Date()
     @State private var showExitConfirm = false
     @State private var startedOnce = false
@@ -47,12 +49,18 @@ struct RootView: View {
         ZStack {
             PlayerSurface(controller: player)
 
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { toggleOverlay() }
+            HStack(spacing: 0) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleLeft() }
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleRight() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack(spacing: 0) {
-                if overlayVisible {
+                if leftVisible {
                     LeftPanel(
                         selectedTab: $selectedTab,
                         currentGroup: currentGroup,
@@ -74,7 +82,7 @@ struct RootView: View {
 
                 Spacer(minLength: 0)
 
-                if overlayVisible {
+                if rightVisible {
                     RightPanel(
                         onSelect: { sheet in activeSheet = sheet },
                         onExit: { showExitConfirm = true }
@@ -117,7 +125,8 @@ struct RootView: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
-        .animation(.easeInOut(duration: 0.22), value: overlayVisible)
+        .animation(.easeInOut(duration: 0.22), value: leftVisible)
+        .animation(.easeInOut(duration: 0.22), value: rightVisible)
         .onAppear { bootstrap() }
         .onReceive(ticker) { now = $0 }
         .onChange(of: store.selectedSourceID) { _ in
@@ -134,7 +143,8 @@ struct RootView: View {
             player.aspect = aspect
         }
         .onDisappear {
-            hideTask?.cancel()
+            leftHideTask?.cancel()
+            rightHideTask?.cancel()
             bannerTask?.cancel()
             player.stopCurrent()
         }
@@ -210,7 +220,8 @@ struct RootView: View {
 
         let groups = store.currentGroups
         guard !groups.isEmpty else {
-            overlayVisible = true
+            leftVisible = true
+            rightVisible = true
             return
         }
 
@@ -234,24 +245,51 @@ struct RootView: View {
         scheduleAutoHide()
     }
 
-    private func toggleOverlay() {
-        overlayVisible.toggle()
-        if overlayVisible {
-            scheduleAutoHide()
+    private func toggleLeft() {
+        leftVisible.toggle()
+        if leftVisible {
+            scheduleLeftHide()
         } else {
-            hideTask?.cancel()
+            leftHideTask?.cancel()
+        }
+    }
+
+    private func toggleRight() {
+        rightVisible.toggle()
+        if rightVisible {
+            scheduleRightHide()
+        } else {
+            rightHideTask?.cancel()
         }
     }
 
     private func scheduleAutoHide() {
-        hideTask?.cancel()
-        guard store.settings.autoHideSidebars, overlayVisible else { return }
+        scheduleLeftHide()
+        scheduleRightHide()
+    }
+
+    private func scheduleLeftHide() {
+        leftHideTask?.cancel()
+        guard store.settings.autoHideSidebars, leftVisible else { return }
         let delay = max(1.5, store.settings.autoHideDelay)
-        hideTask = Task { @MainActor in
+        leftHideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.25)) {
-                overlayVisible = false
+                leftVisible = false
+            }
+        }
+    }
+
+    private func scheduleRightHide() {
+        rightHideTask?.cancel()
+        guard store.settings.autoHideSidebars, rightVisible else { return }
+        let delay = max(1.5, store.settings.autoHideDelay)
+        rightHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                rightVisible = false
             }
         }
     }
