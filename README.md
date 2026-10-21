@@ -2,6 +2,8 @@
 
 横屏 iOS 直播播放器（SwiftUI），同时集成 **系统原生解码（AVPlayer）** 与 **VLC（MobileVLCKit）**，可在「解码更换」中切换或自动兜底。
 
+当前版本：**1.1 (2)**（左栏底部与「关于应用」均可查看，便于确认安装的是哪一版）。
+
 > 独立项目：包名 `com.msplayer.app`，与任何其他工程无关联。
 
 ## 功能
@@ -43,7 +45,7 @@
 2. `pod install`（MobileVLCKit）
 3. macOS 单元测试（解析器 / 归并 / 分辨率 / XMLTV）
 4. iOS device Release 未签名构建
-5. 打包 `msplayer-1.0-unsigned.ipa` 并上传 artifact
+5. 打包 `msplayer-1.1-unsigned.ipa` 并上传 artifact
 
 本地（macOS）构建：
 

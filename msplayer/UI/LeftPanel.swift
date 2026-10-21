@@ -346,11 +346,19 @@ struct LeftPanel: View {
             if store.epgDatabase != nil {
                 Text("EPG \(store.epgDatabase?.totalPrograms ?? 0)")
             }
+            Text(appVersion)
+                .foregroundColor(.cyan.opacity(0.55))
         }
         .font(.system(size: 10))
         .foregroundColor(.white.opacity(0.4))
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    private var appVersion: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2"
+        return "v\(short)(\(build))"
     }
 
     private func emptyHint(_ text: String) -> some View {
