@@ -48,6 +48,7 @@ targets:
       path: msplayer/Info.plist
       properties:
         CFBundleDisplayName: msplayer
+        CFBundleIconName: AppIcon
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         UILaunchScreen: {}
