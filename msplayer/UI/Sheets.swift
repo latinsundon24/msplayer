@@ -616,7 +616,7 @@ struct AppSettingsSheet: View {
 
             CardBox("数据") {
                 row("订阅列表", "\(store.sources.count)")
-                row("频道", "\(store.currentChannels.count)")
+                row("频道", "\(store.currentGroups.count)")
                 row("线路", "\(store.currentChannels.count)")
                 row("EPG 节目", "\(store.epgDatabase?.totalPrograms ?? 0)")
 
