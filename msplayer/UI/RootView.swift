@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import UIKit
 
 enum LeftTab: String, CaseIterable, Identifiable {
     case playlists = "播放列表"
@@ -87,6 +88,9 @@ struct RootView: View {
                         },
                         onCatchUpFrom: { start in
                             playCatchUp(from: start, to: Date())
+                        },
+                        onInteraction: {
+                            notePanelInteraction()
                         }
                     )
                     .frame(width: 300)
@@ -138,6 +142,13 @@ struct RootView: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .background(
+            PanelInteractionObserver {
+                notePanelInteraction()
+            }
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+        )
         .onAppear { bootstrap() }
         .task {
             await store.reparseAfterUpgrade()
@@ -161,6 +172,12 @@ struct RootView: View {
         }
         .onChange(of: store.settings.aspect) { aspect in
             player.aspect = aspect
+        }
+        .onChange(of: activeSheet == nil) { isNil in
+            // 弹出的面板（列表订阅 / EPG / 关于等）关闭后重新计时；
+            // 面板打开期间不自动隐藏侧栏。
+            hideTask?.cancel()
+            if isNil { scheduleAutoHide() }
         }
         .onDisappear {
             hideTask?.cancel()
@@ -409,9 +426,16 @@ struct RootView: View {
         }
     }
 
+    /// 面板内有任何触摸、滑动、输入时都会调用，重新开始自动隐藏计时。
+    /// 只有持续一段时间没有操作，侧栏才会隐藏。
+    private func notePanelInteraction() {
+        guard visiblePanel != nil, activeSheet == nil else { return }
+        scheduleAutoHide()
+    }
+
     private func scheduleAutoHide() {
         hideTask?.cancel()
-        guard store.settings.autoHideSidebars, visiblePanel != nil else { return }
+        guard store.settings.autoHideSidebars, visiblePanel != nil, activeSheet == nil else { return }
         let delay = max(1.5, store.settings.autoHideDelay)
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -429,6 +453,63 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
             withAnimation { errorBanner = nil }
+        }
+    }
+}
+
+/// 监听窗口内的触摸与滑动，用于重置侧栏的自动隐藏计时。
+/// 只观察、不拦截：cancelsTouchesInView = false，并允许与其他手势同时识别。
+struct PanelInteractionObserver: UIViewRepresentable {
+    let onInteraction: () -> Void
+
+    func makeUIView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.onInteraction = onInteraction
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: ObserverView, context: Context) {
+        uiView.onInteraction = onInteraction
+    }
+
+    final class ObserverView: UIView, UIGestureRecognizerDelegate {
+        var onInteraction: (() -> Void)?
+        private var installed = false
+        private var lastFire = Date.distantPast
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard let window, !installed else { return }
+            installed = true
+
+            let tap = UITapGestureRecognizer(target: self, action: #selector(fired))
+            tap.cancelsTouchesInView = false
+            tap.delaysTouchesBegan = false
+            tap.delaysTouchesEnded = false
+            tap.delegate = self
+
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(fired))
+            pan.cancelsTouchesInView = false
+            pan.delaysTouchesBegan = false
+            pan.delaysTouchesEnded = false
+            pan.delegate = self
+
+            window.addGestureRecognizer(tap)
+            window.addGestureRecognizer(pan)
+        }
+
+        @objc private func fired() {
+            let now = Date()
+            guard now.timeIntervalSince(lastFire) > 0.15 else { return }
+            lastFire = now
+            onInteraction?()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
         }
     }
 }

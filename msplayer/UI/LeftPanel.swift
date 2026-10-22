@@ -14,6 +14,8 @@ struct LeftPanel: View {
     let onSelectProgram: (EPGProgram) -> Void
     /// 无 EPG 时的快速回看：从指定时间播到当前时间。
     let onCatchUpFrom: (Date) -> Void
+    /// 左栏内有输入等非触摸操作时，重置自动隐藏计时。
+    let onInteraction: () -> Void
 
     @State private var search = ""
     @State private var epgDayOffset = 0
@@ -56,6 +58,9 @@ struct LeftPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.leading, 10)
         .padding(.vertical, 10)
+        .onChange(of: search) { _ in onInteraction() }
+        .onChange(of: selectedTab) { _ in onInteraction() }
+        .onChange(of: epgDayOffset) { _ in onInteraction() }
     }
 
     // MARK: - 头部
@@ -453,8 +458,8 @@ struct LeftPanel: View {
     }
 
     private var appVersion: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "7"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.7"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "8"
         return "v\(short)(\(build))"
     }
 
