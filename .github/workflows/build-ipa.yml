@@ -69,19 +69,19 @@ jobs:
           fi
           echo "APP=$APP"
           du -sh "$APP"
-          rm -rf Payload msplayer-1.8-unsigned.ipa
+          rm -rf Payload msplayer-1.9-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          zip -qry msplayer-1.8-unsigned.ipa Payload
-          shasum -a 256 msplayer-1.8-unsigned.ipa | tee msplayer-1.8-unsigned.ipa.sha256
-          ls -lh msplayer-1.8-unsigned.ipa
+          zip -qry msplayer-1.9-unsigned.ipa Payload
+          shasum -a 256 msplayer-1.9-unsigned.ipa | tee msplayer-1.9-unsigned.ipa.sha256
+          ls -lh msplayer-1.9-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: msplayer-unsigned-ipa
           path: |
-            msplayer-1.8-unsigned.ipa
-            msplayer-1.8-unsigned.ipa.sha256
+            msplayer-1.9-unsigned.ipa
+            msplayer-1.9-unsigned.ipa.sha256
           if-no-files-found: error
 

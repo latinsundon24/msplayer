@@ -469,16 +469,28 @@ enum MP4Fragment {
 
             case "senc":
                 guard b.count >= 8 else { continue }
+                // senc 是 fullbox：version(1) + flags(3) + sample_count(4)
+                let flags = (UInt32(b[1]) << 16) | (UInt32(b[2]) << 8) | UInt32(b[3])
+                let perSampleIV = (flags & 0x01) != 0   // 0x01：每样本携带独立 IV
+                let hasSubsamples = (flags & 0x02) != 0 // 0x02：携带 subsample 描述
                 let count = Int(be32(b, 4))
                 let ivLen = ivSizeOverride ?? defaults.ivSize
                 var p = 8
                 var crypto: [SampleCrypto] = []
                 for _ in 0..<count {
-                    guard p + ivLen <= b.count else { break }
-                    let iv = Array(b[p..<(p + ivLen)])
-                    p += ivLen
+                    var iv: [UInt8]
+                    if perSampleIV {
+                        guard p + ivLen <= b.count else { break }
+                        iv = Array(b[p..<(p + ivLen)])
+                        p += ivLen
+                    } else if let constant = defaults.constantIV, !constant.isEmpty {
+                        iv = constant
+                    } else {
+                        iv = []
+                    }
                     var subs: [(clear: Int, encrypted: Int)] = []
-                    if p + 2 <= b.count {
+                    if hasSubsamples {
+                        guard p + 2 <= b.count else { break }
                         let subCount = Int(be16(b, p)); p += 2
                         for _ in 0..<subCount {
                             guard p + 6 <= b.count else { break }
