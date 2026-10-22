@@ -2,7 +2,7 @@
 
 横屏 iOS 直播播放器（SwiftUI），同时集成 **系统原生解码（AVPlayer）** 与 **VLC（MobileVLCKit）**，可在「解码更换」中切换或自动兜底。
 
-当前版本：**1.5 (6)**（左栏底部与「关于应用」均可查看，便于确认安装的是哪一版）。
+当前版本：**1.6 (7)**（左栏底部与「关于应用」均可查看，便于确认安装的是哪一版）。
 
 > 独立项目：包名 `com.msplayer.app`，与任何其他工程无关联。
 
@@ -23,7 +23,7 @@
 - 视频区滑动：上滑频道 +1、下滑频道 -1；右滑线路 +1、左滑线路 -1
 - 支持回看的频道：左右滑动改为时移（前后 30 秒），节目单中已开始的节目显示「回看」并可点播；节目单可在「昨天 / 今天」间切换，各自显示 00:00–24:00 完整一天
 - 列表没有 `catchup` 标签也能识别常见运营商时移地址（`/PLTV/` + `accountinfo=` / `tenantId=` / `fmt=ts2hls`），自动追加 `&playseek=开始-结束`
-- 回看播放失败或 15 秒无画面时，自动在 AVPlayer 与 VLC 之间切换重试一次（系统解码模式下也保留回看兜底）
+- 回看播放失败或 15 秒无画面时，自动在 AVPlayer 与 VLC 之间切换重试一次（系统解码模式下也保留回看兜底）；自动解码时回看优先使用 VLC，兼容运营商时移流
 - 升级后自动按新解析器重新解析在线订阅；本地导入从 1.4 起保留原始列表内容，也可自动重解析
 - 回看地址支持 `&playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}` 模板（兼容 `${(b)}` / `${(e)}` 与 `&amp;`）
 - 识别 m3u 回看标签：`catchup`、`catchup-source`、`catchup-days`、`timeshift`（兼容 `catchup_source` / 无引号 / 属性值含逗号）；支持完整回看地址、`?playseek=…` 与 `&playseek=…` 后缀追加、`{utc}` / `${start}` 等占位符；频道列表与节目单会显示「回看」
@@ -51,7 +51,7 @@
 2. `pod install`（MobileVLCKit）
 3. macOS 单元测试（解析器 / 归并 / 分辨率 / XMLTV）
 4. iOS device Release 未签名构建
-5. 打包 `msplayer-1.5-unsigned.ipa` 并上传 artifact
+5. 打包 `msplayer-1.6-unsigned.ipa` 并上传 artifact
 
 本地（macOS）构建：
 

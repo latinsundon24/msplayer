@@ -287,6 +287,9 @@ final class PlayerController: NSObject, ObservableObject {
         case .vlc:
             return canUseVLC
         case .auto:
+            // 回看（playseek）优先 VLC：运营商时移流的封装/编码更杂，VLC 兼容性更好；
+            // 失败或 15 秒无画面仍会自动回退到 AVPlayer。
+            if lower.contains("playseek="), canUseVLC { return true }
             return onlyVLC && canUseVLC
         }
     }

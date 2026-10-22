@@ -453,8 +453,8 @@ struct LeftPanel: View {
     }
 
     private var appVersion: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "6"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "7"
         return "v\(short)(\(build))"
     }
 
