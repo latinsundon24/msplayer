@@ -78,6 +78,7 @@ struct LeftPanel: View {
             }
             Spacer()
             Button {
+                onInteraction()
                 if let source = store.currentSource {
                     Task { await store.refresh(source) }
                 }
@@ -143,6 +144,7 @@ struct LeftPanel: View {
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
+            .background(ScrollActivityObserver { onInteraction() })
         }
     }
 
@@ -161,7 +163,7 @@ struct LeftPanel: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.4))
-                TextField("搜索频道", text: $search)
+                TextField("搜索频道", text: $search, onEditingChanged: { _ in onInteraction() })
                     .font(.system(size: 12))
                     .textFieldStyle(.plain)
                     .disableAutocorrection(true)
@@ -188,6 +190,7 @@ struct LeftPanel: View {
                 }
                 .padding(.horizontal, 6)
                 .padding(.bottom, 8)
+                .background(ScrollActivityObserver { onInteraction() })
             }
         }
     }
@@ -270,6 +273,7 @@ struct LeftPanel: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
+                .background(ScrollActivityObserver { onInteraction() })
             }
             .onAppear { scrollToCurrent(proxy) }
             .onChange(of: channel?.id) { _ in scrollToCurrent(proxy) }
@@ -292,6 +296,7 @@ struct LeftPanel: View {
                 HStack(spacing: 5) {
                     ForEach([30, 60, 120, 360, 1440, 2880], id: \.self) { minutes in
                         Button {
+                            onInteraction()
                             onCatchUpFrom(Date().addingTimeInterval(-Double(minutes) * 60))
                         } label: {
                             Text(minutes < 60 ? "\(minutes)分前" : "\(minutes / 60)时前")
@@ -304,6 +309,7 @@ struct LeftPanel: View {
                         .buttonStyle(.plain)
                     }
                 }
+                .background(ScrollActivityObserver { onInteraction() })
             }
         }
         .padding(.vertical, 2)
@@ -374,6 +380,7 @@ struct LeftPanel: View {
         return Group {
             if available {
                 Button {
+                    onInteraction()
                     onSelectProgram(program)
                 } label: {
                     programRowContent(program, isNow: isNow, canCatchUp: true)
