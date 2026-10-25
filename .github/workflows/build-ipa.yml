@@ -93,19 +93,29 @@ jobs:
             build
 
       - name: Verify MPVKit really linked
+        # 注意：别在这里用 `grep -q` 直接接管道 —— grep 提前退出会让 nm 收到 SIGPIPE，
+        # 配合 pipefail 会把整个判断带成失败（曾经因此误报）。
         run: |
           set -euo pipefail
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
           echo "APP=$APP"
           du -sh "$APP"
           BIN="$APP/msplayer"
-          if nm -gU "$BIN" 2>/dev/null | grep -qi "mpv_create"; then
-            echo "MPVKit: linked (symbol mpv_create present)"
-          elif strings "$BIN" 2>/dev/null | grep -qi "libmpv"; then
-            echo "MPVKit: linked (libmpv strings present)"
+          nm -gU "$BIN" > /tmp/syms.txt 2>/dev/null || true
+          strings "$BIN" > /tmp/strs.txt 2>/dev/null || true
+          if grep -qi "mpv_create" /tmp/syms.txt; then
+            echo "MPVKit: libmpv linked (symbol mpv_create present)"
           else
-            echo "MPVKit NOT linked into the app binary"
-            nm -gU "$BIN" 2>/dev/null | grep -i mpv | head -20 || true
+            echo "MPVKit NOT linked: symbol mpv_create missing"
+            grep -i mpv /tmp/syms.txt | head -20 || true
+            exit 1
+          fi
+          # 光有库符号还不够：canImport(Libmpv) 为假时会编译成空壳实现，
+          # 这些选项字符串只在真实实现里出现，能证明 MPV 代码路径真的编进去了。
+          if grep -qi "gpu-context" /tmp/strs.txt; then
+            echo "MPVKit: real MPVCore compiled (canImport(Libmpv) = true)"
+          else
+            echo "MPVKit: real MPVCore NOT compiled (canImport(Libmpv) = false)"
             exit 1
           fi
 
