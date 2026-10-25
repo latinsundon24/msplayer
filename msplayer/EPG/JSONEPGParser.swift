@@ -50,8 +50,9 @@ final class JSONEPGParser {
 
     /// 从各种可能的 JSON 形状中提取出「节目对象数组」。
     private static func extractPrograms(from json: Any) -> [Any] {
-        // 顶层就是数组
-        if let array = json as? [Any], looksLikePrograms(array) {
+        // 顶层就是数组：直接返回，由 parse 逐条校验（标题/时间缺失的会被跳过）。
+        // 不在这里做启发式判断，避免中文/非常规字段名的节目数组被误判丢弃。
+        if let array = json as? [Any] {
             return array
         }
         // 顶层对象
@@ -87,11 +88,14 @@ final class JSONEPGParser {
         return nil
     }
 
-    /// 判断一个数组是否像「节目列表」：首个元素是带标题/时间字段的对象。
+    /// 判断一个数组是否像「节目列表」：首个元素是带标题/时间字段的对象
+    /// （兼容中英文键名）。
     private static func looksLikePrograms(_ array: [Any]) -> Bool {
         guard let first = array.first as? [String: Any] else { return false }
         let keys = Set(first.keys.map { $0.lowercased() })
-        return !keys.intersection(["title", "name", "start", "time", "begin", "节目", "名称"]).isEmpty
+        let known: Set<String> = ["title", "name", "start", "time", "begin",
+                                  "节目", "名称", "标题", "开始", "起", "结束"]
+        return !keys.intersection(known).isEmpty
     }
 
     /// 多别名取首个非空字符串值；数字也接受（转为字符串）。
