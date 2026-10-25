@@ -136,7 +136,7 @@ final class MPVCore {
     // MARK: 播放
 
     func load(_ urlString: String, headers: [String: String]) {
-        guard let handle = mpv, !closed else { return }
+        guard mpv != nil, !closed else { return }
         let fields = Self.headerFields(headers)
         if !fields.isEmpty {
             setString("http-header-fields", fields)

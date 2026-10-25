@@ -307,6 +307,9 @@ final class PlayerController: NSObject, ObservableObject {
             return false
         case .vlc:
             return canUseVLC
+        case .mpv:
+            // MPV 在 start() 里已经优先处理掉了；走到这里说明 MPV 内核不可用，按系统解码走
+            return false
         case .auto:
             // 回看（playseek）优先 VLC：运营商时移流的封装/编码更杂，VLC 兼容性更好；
             // 失败或 15 秒无画面仍会自动回退到 AVPlayer。
@@ -427,7 +430,8 @@ final class PlayerController: NSObject, ObservableObject {
     private func startMPVTick() {
         mpvTickTimer?.invalidate()
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.handleMPVTick() }
+            guard let self else { return }
+            Task { @MainActor in self.handleMPVTick() }
         }
         RunLoop.main.add(timer, forMode: .common)
         mpvTickTimer = timer
