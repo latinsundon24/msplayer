@@ -307,6 +307,15 @@ enum PlaylistParser {
         for (rawKey, rawValue) in dict {
             let key = rawKey.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
+            let canonical = canonicalHeaderKey(key)
+
+            // Cookie 的值形态最多：字符串、字符串数组、{name,value} 数组、{"名":"值"} 字典
+            if canonical == "Cookie" {
+                if let text = cookieString(from: rawValue) {
+                    mergeCookie(text, into: &headers)
+                }
+                continue
+            }
 
             // {"headers":{…}} / {"header":{…}} 这类嵌套包装
             if let nested = rawValue as? [String: Any] {
@@ -322,6 +331,40 @@ enum PlaylistParser {
             guard !value.isEmpty else { continue }
             setHeader(key, value: value, into: &headers)
         }
+    }
+
+    /// Cookie 在 JSON 里的写法五花八门，全部收敛成标准的 "a=1; b=2"。
+    /// 支持："a=1" / ["a=1","b=2"] / [{"name":"a","value":"1"}] / {"a":"1"} / 数字。
+    /// 不收敛的话：数组会被当成无效值丢掉，{"name":..,"value":..} 反而会发出 Name: / Value: 两个垃圾头。
+    private static func cookieString(from value: Any) -> String? {
+        if let text = value as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let number = value as? NSNumber {
+            let text = headerValue(number)
+            return text.isEmpty ? nil : text
+        }
+        if let list = value as? [Any] {
+            let pieces = list.compactMap { cookieString(from: $0) }
+            return pieces.isEmpty ? nil : pieces.joined(separator: "; ")
+        }
+        if let dict = value as? [String: Any] {
+            let name = (dict["name"] as? String) ?? (dict["Name"] as? String)
+            let pairValue = (dict["value"] ?? dict["Value"])
+            if let name, let pairValue {
+                return "\(name)=\(headerValue(pairValue))"
+            }
+            var pieces: [String] = []
+            // 字典无序，按 key 排序保证每次解析结果一致
+            for key in dict.keys.sorted() {
+                let text = headerValue(dict[key]!)
+                guard !text.isEmpty else { continue }
+                pieces.append("\(key)=\(text)")
+            }
+            return pieces.isEmpty ? nil : pieces.joined(separator: "; ")
+        }
+        return nil
     }
 
     /// JSON 里的值可能是字符串、数字或布尔，统一转成头值文本。
@@ -372,12 +415,69 @@ enum PlaylistParser {
         }
     }
 
+    /// Cookie 是一个头里塞多个 `名=值` 对的特殊头：
+    /// 不同列表写法差异极大（"a=1; b=2"、字符串数组、{name,value} 数组、{"名":"值"} 字典），
+    /// 而且可能来自多个来源（#EXTHTTP / #EXTVLCOPT:http-cookie / |Cookie= / stream_headers）。
+    /// HTTP 只能有一个 Cookie 头，直接 setHeader 会互相覆盖丢项，所以统一收进这里做「合并 + 去重」。
+    static func mergeCookie(_ addition: String, into headers: inout [String: String]) {
+        // 先把已有的同义 Cookie 键（可能有 "Cookie" / "cookie" 两种写法）取出来删掉
+        let existingKeys = headers.keys.filter { canonicalHeaderKey($0) == "Cookie" }
+        var sources: [String] = []
+        for key in existingKeys {
+            sources.append(headers[key] ?? "")
+            headers.removeValue(forKey: key)
+        }
+        sources.append(addition)
+
+        // Set-Cookie 的属性混进 Cookie 头会让源站解析失败，直接剔除
+        let attributes: Set<String> = ["path", "domain", "expires", "max-age", "secure",
+                                       "httponly", "samesite", "partitioned", "priority"]
+
+        var names: [String] = []
+        var pairs: [(String, String)] = []
+        for source in sources {
+            for piece in source.split(separator: ";") {
+                let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+                // 换行会污染整个请求头，脏数据跳过
+                guard !trimmed.isEmpty, trimmed.rangeOfCharacter(from: .newlines) == nil else { continue }
+                let kv = trimmed.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                let name: String
+                let value: String
+                if kv.count == 2 {
+                    name = String(kv[0]).trimmingCharacters(in: .whitespaces)
+                    value = String(kv[1]).trimmingCharacters(in: .whitespaces)
+                } else {
+                    name = trimmed
+                    value = ""
+                }
+                guard !name.isEmpty else { continue }
+                if attributes.contains(name.lowercased()) { continue }
+                if let index = names.firstIndex(of: name) {
+                    pairs[index] = (name, value)      // 同名覆盖，后到的为准
+                } else {
+                    names.append(name)
+                    pairs.append((name, value))
+                }
+            }
+        }
+
+        let joined = pairs
+            .map { $0.1.isEmpty ? $0.0 : "\($0.0)=\($0.1)" }
+            .joined(separator: "; ")
+        guard !joined.isEmpty else { return }
+        headers["Cookie"] = joined
+    }
+
     /// 写入头：先删掉同义的旧键再写，避免重复。
     static func setHeader(_ key: String, value: String, into headers: inout [String: String]) {
         let canonical = canonicalHeaderKey(key)
         // HTTP 头名不允许空白，脏数据直接丢弃，否则会在发出请求时炸掉（NSInvalidArgumentException）
         guard !canonical.isEmpty,
               canonical.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return }
+        if canonical == "Cookie" {
+            mergeCookie(value, into: &headers)
+            return
+        }
         // 先收集再删除：不能一边遍历字典的 keys 一边 removeValue（未定义行为）
         let duplicates = headers.keys.filter { canonicalHeaderKey($0) == canonical }
         for existing in duplicates { headers.removeValue(forKey: existing) }
@@ -394,6 +494,11 @@ enum PlaylistParser {
             let value = String(kv[1]).trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty, !value.isEmpty else { continue }
             let canonical = canonicalHeaderKey(key)
+            // Cookie 不参与「已存在就不覆盖」的语义：多个来源要合并成一个 Cookie 头
+            if canonical == "Cookie" {
+                mergeCookie(value, into: &headers)
+                continue
+            }
             // KODIPROP stream_headers 既有语义：同一头已存在时不覆盖
             guard !headers.keys.contains(where: { canonicalHeaderKey($0) == canonical }) else { continue }
             headers[canonical] = value

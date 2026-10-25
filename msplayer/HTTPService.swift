@@ -169,6 +169,11 @@ enum HTTPService {
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
+        // 列表显式给了 Cookie 时关掉 URLSession 的自动 Cookie 管理：
+        // 否则它自己的 cookie jar 会参与处理，可能把源站校验用的那一份挤掉。
+        if headers.keys.contains(where: { $0.caseInsensitiveCompare("Cookie") == .orderedSame }) {
+            request.httpShouldHandleCookies = false
+        }
         if let (start, end) = range {
             request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
         }

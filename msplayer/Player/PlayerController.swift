@@ -296,6 +296,15 @@ final class PlayerController: NSObject, ObservableObject {
 
     private func start(url: URL, headers: [String: String], channel: Channel) {
         if shouldUseVLC(url: url, channel: channel) {
+            // VLC 只真正认 User-Agent / Referer 两个选项，Cookie 这类自定义头在 VLC 侧没有可靠选项，
+            // 与其赌它生效（表现为源站 403 或一直转圈），不如同样交给本地代理：
+            // 代理由 URLSession 取流，Cookie 一定随清单和分片一起发出。
+            if let proxy = makeProxyIfNeeded(url: url, headers: headers, channel: channel) {
+                self.proxy = proxy
+                playbackMode = "VLC · 本地代理（自定义请求头）"
+                startVLC(url: proxy.entryURL, headers: [:])
+                return
+            }
             startVLC(url: url, headers: headers)
             return
         }
@@ -303,20 +312,29 @@ final class PlayerController: NSObject, ObservableObject {
         // 而 #EXTHTTP / #EXTVLCOPT / |Referer=… 指定的头，往往是源站用来校验分片的（防盗链、鉴权），
         // 分片缺头会 403 或一直转圈，且不一定让 AVPlayerItem 变成 failed —— 现有失败兜底等不到。
         // 所以带自定义头时改走本地代理：代理由 URLSession 取数，清单和分片都会带上这些头。
-        if shouldProxyForCustomHeaders(url: url, headers: headers, channel: channel) {
-            do {
-                let proxy = try HLSProxy(channel: channel)
-                proxyAttempted = true
-                self.proxy = proxy
-                NSLog("[msplayer] custom headers -> local proxy: %@", headers.description)
-                startSystem(url: proxy.entryURL, headers: [:], channel: channel)
-                playbackMode = "HLS · 本地代理（自定义请求头）"
-                return
-            } catch {
-                NSLog("[msplayer] custom-header proxy start failed: %@", String(describing: error))
-            }
+        if let proxy = makeProxyIfNeeded(url: url, headers: headers, channel: channel) {
+            self.proxy = proxy
+            playbackMode = "HLS · 本地代理（自定义请求头）"
+            startSystem(url: proxy.entryURL, headers: [:], channel: channel)
+            return
         }
         startSystem(url: url, headers: headers, channel: channel)
+    }
+
+    /// 需要代理时就地启动并返回；条件不满足或启动失败返回 nil（调用方按原路径直连）。
+    private func makeProxyIfNeeded(url: URL,
+                                   headers: [String: String],
+                                   channel: Channel) -> HLSProxy? {
+        guard shouldProxyForCustomHeaders(url: url, headers: headers, channel: channel) else { return nil }
+        do {
+            let proxy = try HLSProxy(channel: channel)
+            proxyAttempted = true
+            NSLog("[msplayer] custom headers -> local proxy: %@", headers.description)
+            return proxy
+        } catch {
+            NSLog("[msplayer] custom-header proxy start failed: %@", String(describing: error))
+            return nil
+        }
     }
 
     /// 只有「确实带了自定义头」且是 HTTP(S) 流式清单时才走代理。
@@ -341,7 +359,9 @@ final class PlayerController: NSObject, ObservableObject {
     // MARK: - 回看解码兜底
 
     private var isCatchUpPlayback: Bool {
-        playbackURL.lowercased().contains("playseek=")
+        // 走代理时 playbackURL 是本机地址（目标被 base64 过），只能拿原始频道地址判断
+        let original = currentChannel?.url.lowercased() ?? ""
+        return playbackURL.lowercased().contains("playseek=") || original.contains("playseek=")
     }
 
     /// 回看流启动 15 秒仍无画面时，自动换另一个解码器重试一次。

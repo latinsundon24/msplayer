@@ -196,6 +196,89 @@ final class PlaylistParserTests: XCTestCase {
         XCTAssertNil(channels[1].headers["Referer"])
     }
 
+    // MARK: - Cookie
+
+    func testCookiePlainString() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"Cookie":"sid=1; token=abc"}
+        http://example.com/live.m3u8
+        """
+        let headers = PlaylistParser.parse(text)[0].headers
+        XCTAssertEqual(headers["Cookie"], "sid=1; token=abc")
+        XCTAssertEqual(headers.count, 1)
+    }
+
+    /// {"cookie":["a=1","b=2"]}：数组形态不能整个丢掉
+    func testCookieStringArray() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"cookie":["sid=1","token=abc"]}
+        http://example.com/live.m3u8
+        """
+        let headers = PlaylistParser.parse(text)[0].headers
+        XCTAssertEqual(headers["Cookie"], "sid=1; token=abc")
+        XCTAssertEqual(headers.count, 1)
+    }
+
+    /// [{"name":"token","value":"abc"}]：不能退化成 Name: / Value: 两个垃圾头
+    func testCookieNameValueArray() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"cookie":[{"name":"token","value":"abc"},{"name":"sid","value":"9"}]}
+        http://example.com/live.m3u8
+        """
+        let headers = PlaylistParser.parse(text)[0].headers
+        XCTAssertEqual(headers["Cookie"], "token=abc; sid=9")
+        XCTAssertNil(headers["Name"])
+        XCTAssertNil(headers["Value"])
+    }
+
+    /// {"cookie":{"session":"abc"}}：嵌套对象要拼成 session=abc
+    func testCookieNestedObject() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"cookie":{"session":"abc","lang":"zh"}}
+        http://example.com/live.m3u8
+        """
+        let headers = PlaylistParser.parse(text)[0].headers
+        XCTAssertEqual(headers["Cookie"], "session=abc; lang=zh")
+        XCTAssertNil(headers["Session"])
+    }
+
+    /// 多个来源各给一部分 Cookie，HTTP 只能有一个 Cookie 头，必须合并而不是互相覆盖
+    func testCookieMergedAcrossTags() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTVLCOPT:http-cookie=sid=1
+        #EXTHTTP:{"Cookie":"token=abc"}
+        http://example.com/live.m3u8|Cookie=sid=2
+        """
+        let headers = PlaylistParser.parse(text)[0].headers
+        // 地址行 |Cookie= 优先级最高，同名 sid 覆盖前面的值，其余保留
+        XCTAssertEqual(headers["Cookie"], "sid=2; token=abc")
+    }
+
+    /// Set-Cookie 的属性混进来要剔除，否则源站解析失败
+    func testCookieAttributesStripped() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"Cookie":"sid=1; Path=/; HttpOnly; Secure; Max-Age=3600"}
+        http://example.com/live.m3u8
+        """
+        XCTAssertEqual(PlaylistParser.parse(text)[0].headers["Cookie"], "sid=1")
+    }
+
+    /// 值里带等号/空值的极端写法不能被拆坏
+    func testCookieValueWithEquals() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"Cookie":"jwt=eyJhbGciOiJIUzI1NiJ9.e30=; sid=2"}
+        http://example.com/live.m3u8
+        """
+        XCTAssertEqual(PlaylistParser.parse(text)[0].headers["Cookie"], "jwt=eyJhbGciOiJIUzI1NiJ9.e30=; sid=2")
+    }
+
     func testCanonicalHeaderKey() {
         XCTAssertEqual(PlaylistParser.canonicalHeaderKey("referrer"), "Referer")
         XCTAssertEqual(PlaylistParser.canonicalHeaderKey("REFERER"), "Referer")
