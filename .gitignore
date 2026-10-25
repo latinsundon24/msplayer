@@ -5,11 +5,13 @@ Pods/
 Podfile.lock
 build/
 build-tests/
+build-output/
 DerivedData/
 Payload/
 dist/
 *.ipa
 *.ipa.sha256
+*.zip
 
 # macOS / Xcode
 .DS_Store
