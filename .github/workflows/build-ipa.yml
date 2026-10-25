@@ -71,8 +71,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            INFOPLIST_KEY_CFBundleShortVersionString=$FULL \
-            INFOPLIST_KEY_CFBundleVersion=$PATCH \
+            MARKETING_VERSION=$FULL \
+            CURRENT_PROJECT_VERSION=$PATCH \
             build
 
       - name: Package unsigned IPA
