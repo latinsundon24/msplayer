@@ -49,6 +49,12 @@ struct RootView: View {
     @State private var errorBanner: String?
     @State private var bannerTask: Task<Void, Never>?
 
+    /// 底栏自动隐藏：切换频道 / 触击下方显示，5 秒后自动隐藏。
+    @State private var bottomBarVisible = true
+    @State private var bottomHideTask: Task<Void, Never>?
+    /// 左栏交互节流，避免滚动时高频重置计时。
+    @State private var lastPanelInteraction = Date.distantPast
+
     private let ticker = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -112,18 +118,29 @@ struct RootView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 if store.settings.showBottomBar {
-                    BottomBar(
-                        index: currentIndex,
-                        group: currentGroup,
-                        lineIndex: lineIndex,
-                        player: player,
-                        nowProgram: nowProgram,
-                        nextProgram: nextProgram,
-                        onSelectLine: { activeSheet = .lines },
-                        onTogglePlay: { player.toggle() },
-                        onSeek: { player.seek(to: $0) },
-                        onShowDiagnostics: { activeSheet = .about }
-                    )
+                    if bottomBarVisible {
+                        BottomBar(
+                            index: currentIndex,
+                            group: currentGroup,
+                            lineIndex: lineIndex,
+                            player: player,
+                            nowProgram: nowProgram,
+                            nextProgram: nextProgram,
+                            onSelectLine: { activeSheet = .lines },
+                            onTogglePlay: { player.toggle(); revealBottomBar() },
+                            onSeek: { player.seek(to: $0); revealBottomBar() },
+                            onShowDiagnostics: { activeSheet = .about }
+                        )
+                        .onTapGesture { revealBottomBar() }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else {
+                        // 隐藏态：底部保留一条不可见的可触击区域，触击下方即可重新显示。
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(height: 80)
+                            .onTapGesture { revealBottomBar() }
+                            .transition(.opacity)
+                    }
                 }
             }
 
@@ -180,6 +197,7 @@ struct RootView: View {
         .onDisappear {
             hideTask?.cancel()
             bannerTask?.cancel()
+            bottomHideTask?.cancel()
             player.stopCurrent()
         }
         .sheet(item: $activeSheet) { sheet in
@@ -299,6 +317,8 @@ struct RootView: View {
         if store.settings.autoPlay, let group = currentGroup {
             play(group: group, line: 0)
         }
+        // 启动后底栏先显示，5 秒后自动隐藏。
+        scheduleBottomHide()
     }
 
     private func play(group: ChannelGroup, line: Int) {
@@ -319,6 +339,7 @@ struct RootView: View {
         player.aspect = store.settings.aspect
         player.open(channel: playback, lineIndex: safeLine)
         scheduleAutoHide()
+        revealBottomBar()
     }
 
     // MARK: - 滑动操作
@@ -400,6 +421,7 @@ struct RootView: View {
         player.open(channel: playback, lineIndex: line)
         showBanner("回看 \(clockText(start)) – \(clockText(end))")
         scheduleAutoHide()
+        revealBottomBar()
         return true
     }
 
@@ -435,6 +457,9 @@ struct RootView: View {
     /// 只有持续一段时间没有操作，侧栏才会隐藏。
     private func notePanelInteraction() {
         guard visiblePanel != nil, activeSheet == nil, !showExitConfirm else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastPanelInteraction) > 0.4 else { return }
+        lastPanelInteraction = now
         scheduleAutoHide()
     }
 
@@ -459,6 +484,28 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
             withAnimation { errorBanner = nil }
+        }
+    }
+
+    // MARK: - 底栏自动隐藏
+
+    /// 显示底栏并重置 5 秒自动隐藏计时。切换频道或触击下方时调用。
+    private func revealBottomBar() {
+        guard store.settings.showBottomBar else { return }
+        bottomBarVisible = true
+        scheduleBottomHide()
+    }
+
+    /// 5 秒后自动隐藏底栏。
+    private func scheduleBottomHide() {
+        bottomHideTask?.cancel()
+        guard store.settings.showBottomBar else { return }
+        bottomHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                bottomBarVisible = false
+            }
         }
     }
 }
