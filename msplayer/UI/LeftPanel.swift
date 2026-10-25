@@ -58,6 +58,9 @@ struct LeftPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.leading, 10)
         .padding(.vertical, 10)
+        // 任意触摸（点击 / 拖拽 / 滚动）都重置左栏隐藏计时：
+        // 覆盖整个面板（含顶部 Picker 与各列表）。它不参与命中测试，不会抢走子控件点击。
+        .background(TouchActivitySensor { onInteraction() })
         .onChange(of: search) { _ in onInteraction() }
         .onChange(of: selectedTab) { _ in onInteraction() }
         .onChange(of: epgDayOffset) { _ in onInteraction() }
