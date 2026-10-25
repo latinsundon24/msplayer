@@ -68,10 +68,10 @@ final class JSONEPGParser {
                 if let arr = dict[key] as? [Any], looksLikePrograms(arr) { return arr }
                 // 嵌套一层：{ "data": { "list": [...] } }
                 if let inner = dict[key] as? [String: Any],
-                   let arr = findProgramArray(in: inner) { return arr }
+                   let arr = findProgramArray(inner) { return arr }
             }
             // 兜底：递归搜索第一个看起来像节目的数组
-            if let found = findProgramArray(in: dict) { return found }
+            if let found = findProgramArray(dict) { return found }
         }
         return []
     }
