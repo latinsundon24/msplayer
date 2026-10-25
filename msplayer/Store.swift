@@ -544,6 +544,6 @@ enum JSONEPGService {
             throw StoreError.badURL
         }
         let response = try await HTTPService.fetch(url.absoluteString, headers: [:])
-        return JSONEPGParser.parse(data: response.data, channelID: channel)
+        return JSONEPGParser.parse(data: response.data, channelID: channel, day: date)
     }
 }

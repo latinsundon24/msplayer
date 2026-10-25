@@ -290,6 +290,40 @@ final class JSONEPGTests: XCTestCase {
         XCTAssertEqual(programs.count, 1)
         XCTAssertEqual(programs[0].title, "有效节目")
     }
+
+    func testParseNestedApiWrapper() {
+        let json = """
+        {
+          "code": 0,
+          "msg": "ok",
+          "data": {
+            "channel": "CCTV1",
+            "list": [
+              {"title":"深度报道","start":"2026-10-25 21:00:00","stop":"2026-10-25 22:00:00"},
+              {"title":"焦点访谈","start":"2026-10-25 22:00:00","stop":"2026-10-25 22:30:00"}
+            ]
+          }
+        }
+        """.data(using: .utf8)!
+        let programs = JSONEPGParser.parse(data: json, channelID: "cctv1")
+        XCTAssertEqual(programs.count, 2)
+        XCTAssertEqual(programs[0].title, "深度报道")
+        XCTAssertEqual(programs[1].title, "焦点访谈")
+    }
+
+    func testParseUnixEpochTimes() {
+        let json = """
+        [
+          {"title":"纪事","start":1800000000,"stop":1800003600},
+          {"title":"夜线","start":1800003600,"stop":1800007200}
+        ]
+        """.data(using: .utf8)!
+        let programs = JSONEPGParser.parse(data: json, channelID: "cctv1")
+        XCTAssertEqual(programs.count, 2)
+        XCTAssertEqual(programs[0].title, "纪事")
+        XCTAssertEqual(programs[1].title, "夜线")
+        XCTAssertLessThan(programs[0].start, programs[1].start)
+    }
 }
 
 final class CatchUpTests: XCTestCase {

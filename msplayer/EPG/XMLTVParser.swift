@@ -113,11 +113,24 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
 }
 
 enum XMLTVDate {
-    static func parse(_ raw: String?) -> Date? {
+    /// 可选的锚定日期（用于仅有「时分」或「日期」的节目时间，按调用方传入的当天补全）。
+    static func parse(_ raw: String?, anchor day: Date? = nil) -> Date? {
         guard let raw else { return nil }
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         text = text.replacingOccurrences(of: "：", with: ":")
+
+        // Unix 时间戳：纯数字（秒 10 位 / 毫秒 13 位）
+        if let num = Double(text), text.allSatisfy({ $0.isNumber || $0 == "." }) {
+            if text.contains(".") {
+                return Date(timeIntervalSince1970: num)
+            }
+            if text.count == 13 {
+                return Date(timeIntervalSince1970: num / 1000)
+            }
+            return Date(timeIntervalSince1970: num)
+        }
+
         // "20261021120000+0800" -> "20261021120000 +0800"
         if let plus = text.lastIndex(of: "+"), plus > text.index(text.startIndex, offsetBy: 12) {
             let before = text[..<plus]
@@ -135,15 +148,41 @@ enum XMLTVDate {
             "yyyyMMddHHmm Z",
             "yyyy-MM-dd HH:mm:ss Z",
             "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm",
+            "yyyy-MM-dd",
             "yyyy-MM-dd'T'HH:mm:ssZ",
             "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy/MM/dd HH:mm:ss"
+            "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS",
+            "yyyy/MM/dd HH:mm:ss",
+            "yyyy/MM/dd HH:mm",
+            "yyyy.MM.dd HH:mm:ss",
+            "HH:mm:ss",
+            "HH:mm"
         ]
         for format in formats {
             formatter.dateFormat = format
-            if let date = formatter.date(from: text) { return date }
+            if let date = formatter.date(from: text) {
+                // 仅有「时分」的时间，用锚定日期补全到当天
+                if (format == "HH:mm:ss" || format == "HH:mm"), let day {
+                    let cal = Calendar.current
+                    let h = cal.component(.hour, from: date)
+                    let m = cal.component(.minute, from: date)
+                    let s = cal.component(.second, from: date)
+                    if let anchored = cal.date(bySettingHour: h, minute: m, second: s, of: day) {
+                        return anchored
+                    }
+                }
+                return date
+            }
         }
-        return ISO8601DateFormatter().date(from: text)
+
+        // ISO8601（含带毫秒的变体）
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: text) { return date }
+        iso.formatOptions = [.withInternetDateTime]
+        return iso.date(from: text)
     }
 }
 
