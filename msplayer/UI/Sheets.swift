@@ -350,6 +350,7 @@ struct EPGSheet: View {
     @State private var format: EPGFormat = .xmltv
     @State private var busy = false
     @State private var message: String?
+    @State private var okMessage: String?
 
     var body: some View {
         SheetShell("EPG订阅") {
@@ -437,6 +438,12 @@ struct EPGSheet: View {
                     .foregroundColor(.white.opacity(0.45))
             }
 
+            if let okMessage {
+                Text(okMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(.green.opacity(0.9))
+            }
+
             if let message {
                 Text(message)
                     .font(.system(size: 11))
@@ -456,9 +463,14 @@ struct EPGSheet: View {
                 try await store.addEPGSource(name: nameValue, url: urlValue, format: format)
                 name = ""
                 url = ""
+                message = nil
+                okMessage = format == .json
+                    ? "已添加 JSON 源（数据将在查看频道时按需加载）"
+                    : "已添加 XMLTV 源"
                 format = .xmltv
             } catch {
                 message = error.localizedDescription
+                okMessage = nil
             }
             busy = false
         }

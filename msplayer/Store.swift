@@ -298,46 +298,52 @@ final class Store: ObservableObject {
 
     // MARK: - JSON EPG（按频道按天按需拉取）
 
-    /// JSON 接口 `ch` 参数取值：优先 tvg-id，没有则回退频道名。
-    /// 若你的服务器是按「频道名」匹配，把这里改成 `channel.name` 即可。
-    private func epgChannelKey(_ channel: Channel) -> String {
+    /// JSON 接口 `ch` 参数候选取值：同时尝试 tvg-id 与频道名。
+    /// 很多服务器是按「频道名」匹配，tvg-id 拉不到时自动回退到频道名，谁有数据用谁。
+    private func epgChannelCandidates(_ channel: Channel) -> [String] {
         let tvg = (channel.tvgID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let name = channel.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tvg.isEmpty ? name : tvg
+        var c: [String] = []
+        if !tvg.isEmpty { c.append(tvg) }
+        if !name.isEmpty, !c.contains(name) { c.append(name) }
+        return c
     }
 
     /// 按需拉取某频道某天的 JSON EPG（带缓存与并发去重）。
     /// JSON 格式源使用基地址 + `?ch=<频道>&date=<日期>` 拉取单频道单日节目单。
+    /// `ch` 会依次尝试 tvg-id / 频道名，任一种取到数据即合并。
     func ensureEPG(for channel: Channel, date: Date = Date()) {
-        let ch = epgChannelKey(channel)
-        guard !ch.isEmpty else { return }
+        let candidates = epgChannelCandidates(channel)
+        guard !candidates.isEmpty else { return }
         let dayKey = JSONEPGService.dateString(date)
         let jsonSources = epgSources.filter { $0.format == .json }
         guard !jsonSources.isEmpty else { return }
 
         for source in jsonSources {
-            let cacheKey = source.id.uuidString + "|" + ch + "|" + dayKey
-            guard jsonCache[cacheKey] == nil, !jsonInFlight.contains(cacheKey) else { continue }
-            jsonInFlight.insert(cacheKey)
             let base = source.url.hasSuffix("/") ? source.url : source.url + "/"
-            Task { [weak self] in
-                guard let self else { return }
-                do {
-                    let programs = try await JSONEPGService.fetchPrograms(base: base,
-                                                                          channel: ch,
-                                                                          date: date)
-                    if !programs.isEmpty {
-                        self.mergePrograms(programs, channelID: ch)
-                        if let index = self.epgSources.firstIndex(where: { $0.id == source.id }) {
-                            self.epgSources[index].programCount = self.epgDatabase?.totalPrograms ?? 0
-                            self.persistEPG()
+            for ch in candidates {
+                let cacheKey = source.id.uuidString + "|" + ch + "|" + dayKey
+                guard jsonCache[cacheKey] == nil, !jsonInFlight.contains(cacheKey) else { continue }
+                jsonInFlight.insert(cacheKey)
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        let programs = try await JSONEPGService.fetchPrograms(base: base,
+                                                                              channel: ch,
+                                                                              date: date)
+                        if !programs.isEmpty {
+                            self.mergePrograms(programs, channelID: ch)
+                            if let index = self.epgSources.firstIndex(where: { $0.id == source.id }) {
+                                self.epgSources[index].programCount = self.epgDatabase?.totalPrograms ?? 0
+                                self.persistEPG()
+                            }
                         }
+                        self.jsonCache[cacheKey] = programs
+                    } catch {
+                        self.jsonCache[cacheKey] = []
                     }
-                    self.jsonCache[cacheKey] = programs
-                } catch {
-                    self.jsonCache[cacheKey] = []
+                    self.jsonInFlight.remove(cacheKey)
                 }
-                self.jsonInFlight.remove(cacheKey)
             }
         }
     }
