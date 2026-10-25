@@ -234,6 +234,64 @@ final class XMLTVTests: XCTestCase {
     }
 }
 
+final class JSONEPGTests: XCTestCase {
+
+    func testParseWrappedProgramsArray() {
+        let json = """
+        {
+          "programs": [
+            {"title":"新闻联播","start":"2026-10-25 19:00:00","stop":"2026-10-25 19:30:00"},
+            {"title":"天气预报","start":"2026-10-25 19:30:00","end":"2026-10-25 19:35:00"}
+          ]
+        }
+        """.data(using: .utf8)!
+        let programs = JSONEPGParser.parse(data: json, channelID: "cctv1")
+        XCTAssertEqual(programs.count, 2)
+        XCTAssertEqual(programs[0].title, "新闻联播")
+        XCTAssertEqual(programs[1].title, "天气预报")
+        XCTAssertLessThan(programs[0].start, programs[1].start)
+    }
+
+    func testParseTopLevelArrayWithChineseKeys() {
+        let json = """
+        [
+          {"标题":"早间新闻","开始":"2026-10-25 07:00:00","结束":"2026-10-25 08:00:00"},
+          {"标题":"午间新闻","开始":"2026-10-25 12:00:00","结束":"2026-10-25 13:00:00"}
+        ]
+        """.data(using: .utf8)!
+        let programs = JSONEPGParser.parse(data: json, channelID: "cctv1")
+        XCTAssertEqual(programs.count, 2)
+        XCTAssertEqual(programs[0].title, "早间新闻")
+        XCTAssertEqual(programs[1].title, "午间新闻")
+    }
+
+    func testParseChannelKeyedObject() {
+        let json = """
+        {
+          "CCTV1": [
+            {"title":"测试节目","start":"2026-10-25 20:00:00","stop":"2026-10-25 21:00:00"}
+          ]
+        }
+        """.data(using: .utf8)!
+        let programs = JSONEPGParser.parse(data: json, channelID: "cctv1")
+        XCTAssertEqual(programs.count, 1)
+        XCTAssertEqual(programs[0].title, "测试节目")
+    }
+
+    func testMissingStartOrTitleSkipped() {
+        let json = """
+        [
+          {"title":"有效节目","start":"2026-10-25 20:00:00","stop":"2026-10-25 21:00:00"},
+          {"title":"","start":"2026-10-25 21:00:00","stop":"2026-10-25 22:00:00"},
+          {"start":"2026-10-25 22:00:00","stop":"2026-10-25 23:00:00"}
+        ]
+        """.data(using: .utf8)!
+        let programs = JSONEPGParser.parse(data: json, channelID: "cctv1")
+        XCTAssertEqual(programs.count, 1)
+        XCTAssertEqual(programs[0].title, "有效节目")
+    }
+}
+
 final class CatchUpTests: XCTestCase {
 
     func testSupportsPlayseekTemplate() {

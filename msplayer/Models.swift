@@ -143,10 +143,33 @@ struct Source: Codable, Identifiable, Hashable {
 
 // MARK: - EPG
 
+enum EPGFormat: String, Codable, CaseIterable, Identifiable {
+    case xmltv
+    case json
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .xmltv: return "XMLTV (xml)"
+        case .json: return "JSON (http://domain/epg/)"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .xmltv: return "XMLTV / epg.xml 完整节目单地址"
+        case .json: return "JSON 基地址，例如 http://domain/epg/"
+        }
+    }
+}
+
 struct EPGSource: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var name: String
     var url: String
+    /// EPG 数据格式。默认 xmltv，向后兼容已保存的订阅。
+    var format: EPGFormat = .xmltv
     var updatedAt: Date? = nil
     var programCount: Int = 0
 }

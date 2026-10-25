@@ -153,6 +153,7 @@ struct RootView: View {
             }
         }
         .onReceive(ticker) { now = $0 }
+        .onChange(of: activeLineChannel?.id) { _ in triggerEPG() }
         .onChange(of: store.selectedSourceID) { _ in
             if currentGroup == nil || !store.currentGroups.contains(where: { $0.name == currentGroup?.name }) {
                 currentGroup = store.currentGroups.first
@@ -261,6 +262,13 @@ struct RootView: View {
         }
         guard let channel else { return nil }
         return store.programInfo(for: channel, at: now).next
+    }
+
+    /// 切到新频道时，按需触发 JSON EPG 拉取（XMLTV 不需，内部已判断）。
+    private func triggerEPG() {
+        let channel = activeLineChannel ?? player.currentChannel ?? currentGroup?.primary
+        guard let channel, store.epgSources.contains(where: { $0.format == .json }) else { return }
+        store.ensureEPG(for: channel, date: Date())
     }
 
     private var swipeGesture: some Gesture {

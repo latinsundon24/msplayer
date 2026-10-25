@@ -33,6 +33,10 @@ final class Store: ObservableObject {
     /// EPG 缓存版本：1.5 起保留昨天一整天的节目。
     private static let epgVersion = 2
 
+    /// JSON EPG 缓存：key = "sourceID|ch|yyyy-MM-dd"。避免重复拉取与抖动。
+    private var jsonCache: [String: [EPGProgram]] = [:]
+    private var jsonInFlight = Set<String>()
+
     /// 升级后需要按新解析器重新解析已缓存的列表。
     private(set) var needsReparse = false
     /// 升级后需要重新拉取 EPG，补全昨天的节目。
@@ -195,14 +199,26 @@ final class Store: ObservableObject {
 
     // MARK: - EPG 订阅
 
-    func addEPGSource(name: String, url: String) async throws {
+    func addEPGSource(name: String, url: String, format: EPGFormat = .xmltv) async throws {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw StoreError.badURL }
+
+        var source = EPGSource(name: name.isEmpty ? defaultName(for: trimmed) : name,
+                               url: trimmed,
+                               format: format)
+        source.updatedAt = Date()
+
+        if format == .json {
+            // JSON EPG 是「按频道按天」按需拉取，订阅时只需保存基地址。
+            // 真正的数据在用户查看频道/日期时由 ensureEPG 拉取并合并进 epgDatabase。
+            epgSources.append(source)
+            persistEPG()
+            return
+        }
+
         let database = try await EPGService.fetch(trimmed)
         guard database.totalPrograms > 0 else { throw StoreError.emptyEPG }
 
-        var source = EPGSource(name: name.isEmpty ? defaultName(for: trimmed) : name, url: trimmed)
-        source.updatedAt = Date()
         source.programCount = database.totalPrograms
         epgSources.append(source)
         merge(database)
@@ -212,6 +228,18 @@ final class Store: ObservableObject {
     func refreshEPG(_ source: EPGSource) async {
         epgRefreshing = true
         defer { epgRefreshing = false }
+
+        if source.format == .json {
+            // 清空该源的缓存，下次查看频道时按天重新拉取。
+            let prefix = source.id.uuidString + "|"
+            jsonCache = jsonCache.filter { !$0.key.hasPrefix(prefix) }
+            if let index = epgSources.firstIndex(where: { $0.id == source.id }) {
+                epgSources[index].updatedAt = Date()
+            }
+            persistEPG()
+            return
+        }
+
         do {
             let database = try await EPGService.fetch(source.url)
             guard database.totalPrograms > 0 else { throw StoreError.emptyEPG }
@@ -264,6 +292,68 @@ final class Store: ObservableObject {
                 .filter { seen.insert("\($0.start.timeIntervalSince1970)|\($0.title)").inserted }
                 .sorted { $0.start < $1.start }
             base.programs[id] = Array(list.prefix(1200))
+        }
+        epgDatabase = base
+    }
+
+    // MARK: - JSON EPG（按频道按天按需拉取）
+
+    /// JSON 接口 `ch` 参数取值：优先 tvg-id，没有则回退频道名。
+    /// 若你的服务器是按「频道名」匹配，把这里改成 `channel.name` 即可。
+    private func epgChannelKey(_ channel: Channel) -> String {
+        let tvg = (channel.tvgID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = channel.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tvg.isEmpty ? name : tvg
+    }
+
+    /// 按需拉取某频道某天的 JSON EPG（带缓存与并发去重）。
+    /// JSON 格式源使用基地址 + `?ch=<频道>&date=<日期>` 拉取单频道单日节目单。
+    func ensureEPG(for channel: Channel, date: Date = Date()) {
+        let ch = epgChannelKey(channel)
+        guard !ch.isEmpty else { return }
+        let dayKey = JSONEPGService.dateString(date)
+        let jsonSources = epgSources.filter { $0.format == .json }
+        guard !jsonSources.isEmpty else { return }
+
+        for source in jsonSources {
+            let cacheKey = source.id.uuidString + "|" + ch + "|" + dayKey
+            guard jsonCache[cacheKey] == nil, !jsonInFlight.contains(cacheKey) else { continue }
+            jsonInFlight.insert(cacheKey)
+            let base = source.url.hasSuffix("/") ? source.url : source.url + "/"
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let programs = try await JSONEPGService.fetchPrograms(base: base,
+                                                                          channel: ch,
+                                                                          date: date)
+                    if !programs.isEmpty {
+                        self.mergePrograms(programs, channelID: ch)
+                        if let index = self.epgSources.firstIndex(where: { $0.id == source.id }) {
+                            self.epgSources[index].programCount = self.epgDatabase?.totalPrograms ?? 0
+                            self.persistEPG()
+                        }
+                    }
+                    self.jsonCache[cacheKey] = programs
+                } catch {
+                    self.jsonCache[cacheKey] = []
+                }
+                self.jsonInFlight.remove(cacheKey)
+            }
+        }
+    }
+
+    /// 把单频道单日节目合并进统一的 epgDatabase（channelID = ch）。
+    private func mergePrograms(_ incoming: [EPGProgram], channelID: String) {
+        var base = epgDatabase ?? EPGDatabase()
+        var list = base.programs[channelID] ?? []
+        list.append(contentsOf: incoming)
+        var seen = Set<String>()
+        list = list
+            .filter { seen.insert("\($0.start.timeIntervalSince1970)|\($0.title)").inserted }
+            .sorted { $0.start < $1.start }
+        base.programs[channelID] = Array(list.prefix(1200))
+        if base.channelNames[channelID] == nil {
+            base.channelNames[channelID] = [channelID]
         }
         epgDatabase = base
     }
@@ -410,7 +500,7 @@ enum StoreError: LocalizedError {
         switch self {
         case .badURL: return "地址为空或格式不正确"
         case .emptyPlaylist: return "播放列表为空，或格式无法识别"
-        case .emptyEPG: return "EPG 为空，或不是 XMLTV 格式"
+        case .emptyEPG: return "EPG 为空，或不是可识别的 XMLTV / JSON 格式"
         }
     }
 }
@@ -419,5 +509,35 @@ enum EPGService {
     static func fetch(_ urlString: String) async throws -> EPGDatabase {
         let response = try await HTTPService.fetch(urlString, headers: [:])
         return XMLTVParser.parse(data: response.data)
+    }
+}
+
+/// JSON 格式 EPG 的网络层：把「订阅基地址 + 频道 + 日期」拼成请求地址并解析。
+enum JSONEPGService {
+    /// 用本地日历算出 `yyyy-MM-dd`（按用户所在时区的「今天」）。
+    static func dateString(_ date: Date) -> String {
+        let cal = Calendar.current
+        let y = cal.component(.year, from: date)
+        let m = cal.component(.month, from: date)
+        let d = cal.component(.day, from: date)
+        return String(format: "%04d-%02d-%02d", y, m, d)
+    }
+
+    /// 构造单频道单日请求地址：base + `?ch=<频道>&date=<日期>`。
+    static func buildURL(base: String, channel: String, date: Date) -> URL? {
+        guard var components = URLComponents(string: base) else { return nil }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: "ch", value: channel))
+        items.append(URLQueryItem(name: "date", value: dateString(date)))
+        components.queryItems = items
+        return components.url
+    }
+
+    static func fetchPrograms(base: String, channel: String, date: Date) async throws -> [EPGProgram] {
+        guard let url = buildURL(base: base, channel: channel, date: date) else {
+            throw StoreError.badURL
+        }
+        let response = try await HTTPService.fetch(url.absoluteString, headers: [:])
+        return JSONEPGParser.parse(data: response.data, channelID: channel)
     }
 }

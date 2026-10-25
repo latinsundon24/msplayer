@@ -255,9 +255,9 @@ struct LeftPanel: View {
                     dayBar
                     if store.epgSources.isEmpty {
                         if catchUpAvailable {
-                            emptyHint("尚未订阅 EPG\n可直接用上方「快速回看」，或从右侧「EPG订阅」添加 XMLTV 地址")
+                            emptyHint("尚未订阅 EPG\n可直接用上方「快速回看」，或从右侧「EPG订阅」添加 XMLTV / JSON 地址")
                         } else {
-                            emptyHint("尚未订阅 EPG\n从右侧「EPG订阅」添加 XMLTV 地址")
+                            emptyHint("尚未订阅 EPG\n从右侧「EPG订阅」添加 XMLTV / JSON 地址")
                         }
                     } else if let channel, !programs(for: channel).isEmpty {
                         let canCatchUp = catchUpAvailable
@@ -266,19 +266,26 @@ struct LeftPanel: View {
                                 .id(program.id)
                         }
                     } else if catchUpAvailable {
-                        emptyHint("已识别该频道的回看标签，但暂无节目单数据\n可用上方「快速回看」，或在「EPG订阅」添加 XMLTV 源")
+                        emptyHint("已识别该频道的回看标签，但暂无节目单数据\n可用上方「快速回看」，或在「EPG订阅」添加 EPG 源")
                     } else {
-                        emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 XMLTV 源")
+                        emptyHint("该频道暂无节目单数据\n可尝试在「EPG订阅」刷新，或添加更多 EPG 源（XMLTV / JSON）")
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
                 .background(ScrollActivityObserver { onInteraction() })
             }
-            .onAppear { scrollToCurrent(proxy) }
-            .onChange(of: channel?.id) { _ in scrollToCurrent(proxy) }
-            .onChange(of: epgDayOffset) { _ in scrollToCurrent(proxy) }
+            .onAppear { scrollToCurrent(proxy); ensureEPG() }
+            .onChange(of: channel?.id) { _ in scrollToCurrent(proxy); ensureEPG() }
+            .onChange(of: epgDayOffset) { _ in scrollToCurrent(proxy); ensureEPG() }
         }
+    }
+
+    /// JSON 格式 EPG 是按需逐频道逐日拉取：切换频道 / 日期时触发，Store 内部带缓存。
+    private func ensureEPG() {
+        guard let channel, store.epgSources.contains(where: { $0.format == .json }) else { return }
+        let day = Calendar.current.date(byAdding: .day, value: epgDayOffset, to: now) ?? now
+        store.ensureEPG(for: channel, date: day)
     }
 
     private var catchUpAvailable: Bool {

@@ -347,6 +347,7 @@ struct EPGSheet: View {
 
     @State private var name = ""
     @State private var url = ""
+    @State private var format: EPGFormat = .xmltv
     @State private var busy = false
     @State private var message: String?
 
@@ -394,10 +395,17 @@ struct EPGSheet: View {
                 }
             }
 
-            CardBox("添加 XMLTV 源") {
+            CardBox("添加 EPG 源") {
+                Picker("格式", selection: $format) {
+                    ForEach(EPGFormat.allCases) { f in
+                        Text(f.title).tag(f)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 TextField("名称（可选）", text: $name)
                     .darkField()
-                TextField("XMLTV / epg.xml 地址", text: $url)
+                TextField(format.hint, text: $url)
                     .darkField()
                     .keyboardType(.URL)
                     .autocapitalization(.none)
@@ -424,7 +432,7 @@ struct EPGSheet: View {
             }
 
             CardBox("匹配方式") {
-                Text("优先使用 tvg-id 匹配；没有 tvg-id 时按频道名称匹配（忽略空格、高清/标清等后缀）。节目单显示在左栏「节目单」与底栏。")
+                Text("XMLTV 一次性拉取整份节目单；JSON 按「基地址 + ?ch=频道&date=日期」按需逐频道逐日拉取。匹配时优先用 tvg-id，没有则用频道名（忽略空格、高清/标清等后缀）。节目单显示在左栏「节目单」与底栏。")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.45))
             }
@@ -445,9 +453,10 @@ struct EPGSheet: View {
         let urlValue = url
         Task {
             do {
-                try await store.addEPGSource(name: nameValue, url: urlValue)
+                try await store.addEPGSource(name: nameValue, url: urlValue, format: format)
                 name = ""
                 url = ""
+                format = .xmltv
             } catch {
                 message = error.localizedDescription
             }
