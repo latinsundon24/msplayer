@@ -53,8 +53,10 @@ final class LocalHTTPServer {
     // MARK: - 连接
 
     private func accept(_ connection: NWConnection) {
+        // VLC / AVPlayer 会并发预加载后续好几个分片。上限太小（原来 16）会让预取连接
+        // 直接被断掉，播放器只能回落成「边播边等下一段」，分片交界就会出现停顿。
         lock.lock()
-        guard connections.count < 16 else {
+        guard connections.count < 64 else {
             lock.unlock()
             connection.cancel()
             return

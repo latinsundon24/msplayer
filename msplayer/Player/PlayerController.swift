@@ -498,9 +498,17 @@ final class PlayerController: NSObject, ObservableObject {
                 media.addOption(":http-\(key.lowercased())=\(value)")
             }
         }
-        media.addOption(":network-caching=1200")
-        media.addOption(":live-caching=1200")
+        // 缓冲大小直接决定 HLS / DASH 分片交界处会不会顿一下：
+        // 每跨一个分片都要重新发起 HTTP 请求（走本地解密链路时，还要等整段下载 + 解密完成才吐数据），
+        // 原来 1200ms 的缓冲根本盖不住这段间隙，于是表现为「播完一段停一下再接着播」。
+        // 统一放大到 5 秒后，播放器会在缓冲窗口内提前把下一段拉到手，从而连续播放。
+        media.addOption(":network-caching=5000")
+        media.addOption(":live-caching=5000")
+        media.addOption(":file-caching=5000")
+        // 时钟抖动容错：避免 PCR 抖动导致的顿挫。
         media.addOption(":clock-jitter=0")
+        // 连接被服务器断开时自动重连，避免直播推流侧断连后直接卡死。
+        media.addOption(":http-reconnect=true")
 
         if let drawable = vlcDrawable {
             player.drawable = drawable
