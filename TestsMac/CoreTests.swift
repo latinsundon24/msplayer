@@ -242,7 +242,8 @@ final class PlaylistParserTests: XCTestCase {
         http://example.com/live.m3u8
         """
         let headers = PlaylistParser.parse(text)[0].headers
-        XCTAssertEqual(headers["Cookie"], "session=abc; lang=zh")
+        // 字典无序，按 key 排序输出，结果才稳定
+        XCTAssertEqual(headers["Cookie"], "lang=zh; session=abc")
         XCTAssertNil(headers["Session"])
     }
 

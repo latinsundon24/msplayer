@@ -47,13 +47,21 @@ jobs:
 
       - name: Core logic tests (macOS)
         run: |
-          set -o pipefail
           xcodebuild test \
             -project msplayer.xcodeproj \
             -scheme MSCoreTests \
             -destination 'platform=macOS' \
             -derivedDataPath build-tests \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild-tests.log
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msplayer-tests-log
+          path: xcodebuild-tests.log
+          if-no-files-found: ignore
 
       - name: Build unsigned app (iOS device)
         env:
