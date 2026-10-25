@@ -605,6 +605,7 @@ struct DecoderSheet: View {
         switch player.backend {
         case .system: return "系统 AVPlayer"
         case .vlc: return "VLC"
+        case .mpv: return "MPV"
         case .idle: return "未播放"
         }
     }

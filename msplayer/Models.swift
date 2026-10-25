@@ -214,6 +214,7 @@ enum DecoderKind: String, Codable, CaseIterable, Identifiable {
     case auto
     case system
     case vlc
+    case mpv
 
     var id: String { rawValue }
 
@@ -222,6 +223,7 @@ enum DecoderKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return "自动（推荐）"
         case .system: return "系统解码 AVPlayer"
         case .vlc: return "VLC 兼容解码"
+        case .mpv: return "MPV 解码（mpvkit）"
         }
     }
 
@@ -230,6 +232,7 @@ enum DecoderKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return "HLS 用系统解码；FLV/RTMP/RTSP 等交给 VLC"
         case .system: return "系统原生硬解，省电、首帧快"
         case .vlc: return "libVLC 软解，兼容性最好，费电"
+        case .mpv: return "libmpv 解码，VideoToolbox 硬解，格式兼容性最强"
         }
     }
 }

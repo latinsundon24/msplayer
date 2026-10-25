@@ -22,6 +22,10 @@ struct PlayerSurface: View {
                 VLCVideoView(aspect: controller.aspect, videoSize: controller.videoSize) { view in
                     controller.attach(drawable: view)
                 }
+            } else if controller.backend == .mpv {
+                MPVVideoView { view in
+                    controller.attachMPV(layer: view.metalLayer)
+                }
             } else {
                 SystemVideoView(player: controller.avPlayer, gravity: controller.aspect.gravity)
             }
@@ -92,6 +96,24 @@ final class VLCContainerView: UIView {
         }
     }
 }
+
+// MARK: - MPV 画面
+
+struct MPVVideoView: UIViewRepresentable {
+    let attach: (MPVSurfaceView) -> Void
+
+    func makeUIView(context: Context) -> MPVSurfaceView {
+        let view = MPVSurfaceView()
+        attach(view)
+        return view
+    }
+
+    func updateUIView(_ uiView: MPVSurfaceView, context: Context) {
+        attach(uiView)
+    }
+}
+
+// MARK: - VLC 画面
 
 struct VLCVideoView: UIViewRepresentable {
     let aspect: VideoAspect

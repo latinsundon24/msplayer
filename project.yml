@@ -9,6 +9,11 @@ options:
   xcodeVersion: "15.4"
   projectFormat: xcode15_3
 
+packages:
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit.git
+    version: "1.1.0-n9.0.2"
+
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -22,6 +27,8 @@ targets:
     type: application
     platform: iOS
     deploymentTarget: "15.0"
+    dependencies:
+      - package: MPVKit
     sources:
       - path: msplayer
         excludes:

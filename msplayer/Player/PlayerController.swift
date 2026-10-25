@@ -15,6 +15,7 @@ final class PlayerController: NSObject, ObservableObject {
         case idle
         case system
         case vlc
+        case mpv
     }
 
     // MARK: - 对外状态
@@ -46,6 +47,10 @@ final class PlayerController: NSObject, ObservableObject {
 
     private var dash: DashPlayback?
     private var proxy: HLSProxy?
+    private var mpvCore: MPVCore?
+    private var mpvPendingURL: URL?
+    private var mpvPendingHeaders: [String: String] = [:]
+    private var mpvTickTimer: Timer?
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
     private var failObserver: NSObjectProtocol?
@@ -130,6 +135,9 @@ final class PlayerController: NSObject, ObservableObject {
         #endif
     }
 
+    /// MPVKit（libmpv）是否链入本包
+    var canUseMPV: Bool { MPVAvailability.available }
+
     // MARK: - 打开频道
 
     func open(channel: Channel, lineIndex: Int = 0) {
@@ -197,6 +205,9 @@ final class PlayerController: NSObject, ObservableObject {
             (vlcPlayer as? VLCMediaPlayer)?.play()
             isPlaying = true
             #endif
+        case .mpv:
+            mpvCore?.setPaused(false)
+            isPlaying = true
         case .idle:
             break
         }
@@ -211,6 +222,8 @@ final class PlayerController: NSObject, ObservableObject {
             #if canImport(MobileVLCKit)
             (vlcPlayer as? VLCMediaPlayer)?.pause()
             #endif
+        case .mpv:
+            mpvCore?.setPaused(true)
         case .idle:
             break
         }
@@ -239,6 +252,8 @@ final class PlayerController: NSObject, ObservableObject {
             #if canImport(MobileVLCKit)
             (vlcPlayer as? VLCMediaPlayer)?.time = VLCTime(int: Int32(seconds * 1000))
             #endif
+        case .mpv:
+            mpvCore?.seek(to: seconds)
         case .idle:
             break
         }
@@ -254,6 +269,9 @@ final class PlayerController: NSObject, ObservableObject {
             player.rate = value
         }
         #endif
+        if backend == .mpv {
+            mpvCore?.setRate(value)
+        }
     }
 
     func stopCurrent() {
@@ -269,6 +287,9 @@ final class PlayerController: NSObject, ObservableObject {
         #if canImport(MobileVLCKit)
         (vlcPlayer as? VLCMediaPlayer)?.stop()
         #endif
+        mpvCore?.stop()
+        mpvPendingURL = nil
+        stopMPVTick()
         backend = .idle
         isPlaying = false
         currentTime = 0
@@ -295,6 +316,10 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     private func start(url: URL, headers: [String: String], channel: Channel) {
+        if shouldUseMPV(url: url, channel: channel) {
+            startMPV(url: url, headers: headers, channel: channel)
+            return
+        }
         if shouldUseVLC(url: url, channel: channel) {
             // VLC 只真正认 User-Agent / Referer 两个选项，Cookie 这类自定义头在 VLC 侧没有可靠选项，
             // 与其赌它生效（表现为源站 403 或一直转圈），不如同样交给本地代理：
@@ -319,6 +344,122 @@ final class PlayerController: NSObject, ObservableObject {
             return
         }
         startSystem(url: url, headers: headers, channel: channel)
+    }
+
+    /// 只有用户在设置里显式选了 MPV 才用。auto / system / vlc 三条原有路径一字不动。
+    private func shouldUseMPV(url: URL, channel: Channel) -> Bool {
+        Store.shared.settings.decoder == .mpv && canUseMPV
+    }
+
+    // MARK: - MPV 解码
+
+    private func startMPV(url: URL, headers: [String: String], channel: Channel) {
+        backend = .mpv
+        playbackURL = url.absoluteString
+        playbackMode = "MPV · 兼容解码"
+        errorMessage = nil
+        statusText = nil
+        videoSize = .zero
+        resolution = ""
+        currentTime = 0
+        duration = 0
+        isLive = false
+        avPlayer.pause()
+        avPlayer.replaceCurrentItem(with: nil)
+        #if canImport(MobileVLCKit)
+        (vlcPlayer as? VLCMediaPlayer)?.stop()
+        #endif
+
+        var target = url
+        var targetHeaders = headers
+        // 与 VLC 侧同一套保障：带自定义头（Cookie / Referer…）时走本地代理，清单和分片都带得上；
+        // 直连时 mpv 自己也会按 http-header-fields 发头，双保险。
+        if let proxy = makeProxyIfNeeded(url: url, headers: headers, channel: channel) {
+            self.proxy = proxy
+            target = proxy.entryURL
+            targetHeaders = [:]
+            playbackMode = "MPV · 本地代理（自定义请求头）"
+        }
+
+        mpvPendingURL = target
+        mpvPendingHeaders = targetHeaders
+        mpvCore?.load(target.absoluteString, headers: targetHeaders)
+        startMPVTick()
+        armStartupWatchdog(expecting: .mpv)
+        isPlaying = true
+    }
+
+    /// MPV 画面出现时把 Metal layer 交给内核。wid 在创建后改不了，换 layer 就得重建内核。
+    func attachMPV(layer: CAMetalLayer) {
+        guard canUseMPV else { return }
+        if let core = mpvCore {
+            if core.uses(layer: layer) {
+                flushMPVPending(core)
+                return
+            }
+            core.shutdown()
+        }
+        let core = MPVCore(layer: layer)
+        core.onEnded = { [weak self] in self?.onEnded?() }
+        core.onLog = { message in NSLog("[msplayer] mpv: %@", message) }
+        mpvCore = core
+        if let pending = mpvPendingURL {
+            mpvPendingURL = nil
+            core.load(pending.absoluteString, headers: mpvPendingHeaders)
+            return
+        }
+        // 换了 layer 就得重建内核，此时要接着播当前这个频道，不能空着
+        guard backend == .mpv else { return }
+        if let proxy {
+            core.load(proxy.entryURL.absoluteString, headers: [:])
+        } else if !playbackURL.isEmpty {
+            core.load(playbackURL, headers: currentChannel?.headers ?? [:])
+        }
+    }
+
+    private func flushMPVPending(_ core: MPVCore) {
+        guard let pending = mpvPendingURL else { return }
+        mpvPendingURL = nil
+        core.load(pending.absoluteString, headers: mpvPendingHeaders)
+    }
+
+    /// mpv 没有 AVPlayer 那样的周期回调，用主线程定时器读属性更新进度条与分辨率。
+    private func startMPVTick() {
+        mpvTickTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.handleMPVTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        mpvTickTimer = timer
+    }
+
+    private func stopMPVTick() {
+        mpvTickTimer?.invalidate()
+        mpvTickTimer = nil
+    }
+
+    private func handleMPVTick() {
+        guard backend == .mpv, let core = mpvCore else { return }
+        currentTime = max(0, core.currentTime)
+        let length = core.duration
+        if length.isFinite, length > 0 {
+            duration = length
+            isLive = false
+        } else {
+            duration = 0
+            isLive = true
+        }
+        let size = core.videoSize
+        if size.width > 1, size.height > 1, size != videoSize {
+            videoSize = size
+            resolution = ResolutionLabel.text(for: size) ?? ""
+        }
+        isPlaying = !core.isPaused
+        if core.isBuffering {
+            statusText = "缓冲中…"
+        } else if statusText == "缓冲中…" {
+            statusText = nil
+        }
     }
 
     /// 需要代理时就地启动并返回；条件不满足或启动失败返回 nil（调用方按原路径直连）。
@@ -386,6 +527,11 @@ final class PlayerController: NSObject, ObservableObject {
                     self.retryCatchUpWithSystem()
                 }
                 #endif
+            case .mpv:
+                guard self.backend == .mpv else { return }
+                if self.videoSize.width <= 1 {
+                    self.retryCatchUpWithSystem()
+                }
             case .idle:
                 break
             }
@@ -645,7 +791,9 @@ final class PlayerController: NSObject, ObservableObject {
         lines.append("地址：\(currentChannel?.url ?? "—")")
         lines.append("模式：\(playbackMode)")
         lines.append("播放地址：\(playbackURL.isEmpty ? "—" : playbackURL)")
-        lines.append("解码：\(backend == .vlc ? "VLC" : backend == .system ? "AVPlayer" : "—")")
+        let decoderName = backend == .vlc ? "VLC" : backend == .mpv ? "MPV" : backend == .system ? "AVPlayer" : "—"
+        lines.append("解码：\(decoderName)")
+        lines.append("MPV 内核：\(canUseMPV ? "已集成" : "未集成")")
         lines.append("回看：\(isCatchUpPlayback ? "是" : "否")")
         if backend == .system, let item = avPlayer.currentItem {
             lines.append("Item：status=\(item.status.rawValue) 轨道=\(item.tracks.count)")

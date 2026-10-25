@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +34,14 @@ jobs:
           COCOAPODS_DISABLE_STATS: "true"
         run: pod install --repo-update
 
+      - name: Resolve Swift packages (MPVKit)
+        # 与后面的 Release 构建共用 build/SourcePackages，避免几百 MB 的 xcframework 被下载两次
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -workspace msplayer.xcworkspace \
+            -scheme msplayer \
+            -derivedDataPath build
+
       - name: Compute auto-incrementing version (base + run number)
         id: ver
         run: |
@@ -52,6 +60,7 @@ jobs:
             -scheme MSCoreTests \
             -destination 'platform=macOS' \
             -derivedDataPath build-tests \
+            -clonedSourcePackagesDirPath build/SourcePackages \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild-tests.log
           test ${PIPESTATUS[0]} -eq 0
 
@@ -82,6 +91,23 @@ jobs:
             MARKETING_VERSION=$FULL \
             CURRENT_PROJECT_VERSION=$PATCH \
             build
+
+      - name: Verify MPVKit really linked
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          echo "APP=$APP"
+          du -sh "$APP"
+          BIN="$APP/msplayer"
+          if nm -gU "$BIN" 2>/dev/null | grep -qi "mpv_create"; then
+            echo "MPVKit: linked (symbol mpv_create present)"
+          elif strings "$BIN" 2>/dev/null | grep -qi "libmpv"; then
+            echo "MPVKit: linked (libmpv strings present)"
+          else
+            echo "MPVKit NOT linked into the app binary"
+            nm -gU "$BIN" 2>/dev/null | grep -i mpv | head -20 || true
+            exit 1
+          fi
 
       - name: Package unsigned IPA
         env:

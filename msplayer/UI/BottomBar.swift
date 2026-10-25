@@ -166,6 +166,10 @@ struct BottomBar: View {
                 Text("VLC")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.white.opacity(0.4))
+            } else if player.backend == .mpv {
+                Text("MPV")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.white.opacity(0.4))
             } else if player.backend == .system {
                 Text("AVPlayer")
                     .font(.system(size: 9, weight: .bold))
