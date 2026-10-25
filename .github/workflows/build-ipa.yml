@@ -34,9 +34,16 @@ jobs:
           COCOAPODS_DISABLE_STATS: "true"
         run: pod install --repo-update
 
-      - name: Compute auto-incrementing build number
-        id: buildnum
-        run: echo "BUILD_NUM=$(date +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+      - name: Compute auto-incrementing version (base + run number)
+        id: ver
+        run: |
+          BASE=$(grep -m1 'MARKETING_VERSION:' project.yml | sed -E 's/.*"([^"]+)".*/\1/')
+          PATCH="${{ github.run_number }}"
+          FULL="${BASE}.${PATCH}"
+          echo "BASE=$BASE" >> "$GITHUB_OUTPUT"
+          echo "PATCH=$PATCH" >> "$GITHUB_OUTPUT"
+          echo "FULL=$FULL" >> "$GITHUB_OUTPUT"
+          echo "App version this build: $FULL (build $PATCH)"
 
       - name: Core logic tests (macOS)
         run: |
@@ -50,7 +57,8 @@ jobs:
 
       - name: Build unsigned app (iOS device)
         env:
-          BUILD_NUM: ${{ steps.buildnum.outputs.BUILD_NUM }}
+          FULL: ${{ steps.ver.outputs.FULL }}
+          PATCH: ${{ steps.ver.outputs.PATCH }}
         run: |
           set -o pipefail
           xcodebuild \
@@ -63,12 +71,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CURRENT_PROJECT_VERSION=$BUILD_NUM \
+            INFOPLIST_KEY_CFBundleShortVersionString=$FULL \
+            INFOPLIST_KEY_CFBundleVersion=$PATCH \
             build
 
       - name: Package unsigned IPA
         env:
-          BUILD_NUM: ${{ steps.buildnum.outputs.BUILD_NUM }}
+          FULL: ${{ steps.ver.outputs.FULL }}
         run: |
           set -euo pipefail
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
@@ -78,10 +87,8 @@ jobs:
           fi
           echo "APP=$APP"
           du -sh "$APP"
-          VER=$(grep -m1 'MARKETING_VERSION:' project.yml | sed -E 's/.*"([^"]+)".*/\1/')
-          BN="${BUILD_NUM:-0}"
-          echo "App version: $VER (build $BN)"
-          IPA="msplayer-${VER}-${BN}-unsigned.ipa"
+          echo "App version: $FULL"
+          IPA="msplayer-${FULL}-unsigned.ipa"
           rm -rf Payload "$IPA"
           mkdir Payload
           cp -R "$APP" Payload/
