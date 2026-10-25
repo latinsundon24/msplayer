@@ -498,15 +498,29 @@ struct ScrollActivityObserver: UIViewRepresentable {
         private func attachIfNeeded() {
             guard observation == nil else { return }
 
-            var ancestor = superview
-            while let view = ancestor, !(view is UIScrollView) {
-                ancestor = view.superview
+            // ObserverView 通过 .background 挂在 ScrollView 内容之外，UIScrollView 并不是它的
+            // 祖先视图，而是某个祖先视图子树里的成员。因此要从自身开始向上遍历祖先，在每个
+            // 层级里递归向下搜索 UIScrollView，才能正确挂上 contentOffset 监听。
+            // 之前只向上找父视图，永远找不到 ScrollView，导致滚动时从不重置自动隐藏计时，
+            // 面板在用户滚动浏览节目单时也会被隐藏。
+            var node: UIView? = self
+            while let current = node {
+                if let scrollView = ScrollActivityObserver.firstScrollView(in: current) {
+                    observation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+                        self?.onScroll?()
+                    }
+                    return
+                }
+                node = current.superview
             }
-            guard let scrollView = ancestor as? UIScrollView else { return }
+        }
 
-            observation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
-                self?.onScroll?()
+        private static func firstScrollView(in view: UIView) -> UIScrollView? {
+            if let scroll = view as? UIScrollView { return scroll }
+            for subview in view.subviews {
+                if let found = firstScrollView(in: subview) { return found }
             }
+            return nil
         }
 
         deinit {

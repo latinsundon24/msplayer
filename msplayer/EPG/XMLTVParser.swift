@@ -114,7 +114,9 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
 
 enum XMLTVDate {
     /// 可选的锚定日期（用于仅有「时分」或「日期」的节目时间，按调用方传入的当天补全）。
-    static func parse(_ raw: String?, anchor day: Date? = nil) -> Date? {
+    /// - Parameter timeZone: 把无时区偏移的时间字符串解释为哪个时区。默认 UTC（兼容 XMLTV 原行为）；
+    ///   JSON EPG 的节目时间通常是服务器本地时间，调用方应传入 `TimeZone.current` 以免差 8 小时。
+    static func parse(_ raw: String?, anchor day: Date? = nil, timeZone: TimeZone = TimeZone(secondsFromGMT: 0)!) -> Date? {
         guard let raw else { return nil }
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
@@ -141,7 +143,7 @@ enum XMLTVDate {
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.timeZone = timeZone
         let formats = [
             "yyyyMMddHHmmss Z",
             "yyyyMMddHHmmss",
@@ -177,12 +179,17 @@ enum XMLTVDate {
             }
         }
 
-        // ISO8601（含带毫秒的变体）
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: text) { return date }
-        iso.formatOptions = [.withInternetDateTime]
-        return iso.date(from: text)
+        // ISO8601 兜底：仅在 UTC 模式处理。本地时区模式下，无偏移的 ISO 时间（如
+        // "2026-10-25T19:00:00"）已由上方 formatter 以本地时区解析；若这里再用 UTC 解析
+        // 会被当成 UTC，导致差 8 小时。带明确偏移（Z / +08:00）的字符串上方 formatter 也已覆盖。
+        if timeZone == TimeZone(secondsFromGMT: 0) {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: text) { return date }
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: text)
+        }
+        return nil
     }
 }
 

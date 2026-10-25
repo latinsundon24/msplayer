@@ -34,6 +34,10 @@ jobs:
           COCOAPODS_DISABLE_STATS: "true"
         run: pod install --repo-update
 
+      - name: Compute auto-incrementing build number
+        id: buildnum
+        run: echo "BUILD_NUM=$(date +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+
       - name: Core logic tests (macOS)
         run: |
           set -o pipefail
@@ -45,6 +49,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Build unsigned app (iOS device)
+        env:
+          BUILD_NUM: ${{ steps.buildnum.outputs.BUILD_NUM }}
         run: |
           set -o pipefail
           xcodebuild \
@@ -57,9 +63,12 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=$BUILD_NUM \
             build
 
       - name: Package unsigned IPA
+        env:
+          BUILD_NUM: ${{ steps.buildnum.outputs.BUILD_NUM }}
         run: |
           set -euo pipefail
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
@@ -70,8 +79,9 @@ jobs:
           echo "APP=$APP"
           du -sh "$APP"
           VER=$(grep -m1 'MARKETING_VERSION:' project.yml | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "App version: $VER"
-          IPA="msplayer-${VER}-unsigned.ipa"
+          BN="${BUILD_NUM:-0}"
+          echo "App version: $VER (build $BN)"
+          IPA="msplayer-${VER}-${BN}-unsigned.ipa"
           rm -rf Payload "$IPA"
           mkdir Payload
           cp -R "$APP" Payload/

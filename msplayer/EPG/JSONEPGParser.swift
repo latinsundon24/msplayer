@@ -34,8 +34,8 @@ final class JSONEPGParser {
             let desc = stringValue(dict, keys: ["desc", "description", "detail", "synopsis", "info", "简介", "描述"])?.nilIfEmpty
             let startRaw = stringValue(dict, keys: ["start", "begin", "time", "startTime", "starttime", "s", "开始", "起"])
             let stopRaw = stringValue(dict, keys: ["stop", "end", "endTime", "endtime", "e", "结束"])
-            guard let startRaw, let start = XMLTVDate.parse(startRaw, anchor: day) else { continue }
-            let stop = XMLTVDate.parse(stopRaw, anchor: day) ?? start.addingTimeInterval(3600)
+            guard let startRaw, let start = XMLTVDate.parse(startRaw, anchor: day, timeZone: .current) else { continue }
+            let stop = XMLTVDate.parse(stopRaw, anchor: day, timeZone: .current) ?? start.addingTimeInterval(3600)
             result.append(EPGProgram(channelID: channelID,
                                      title: title,
                                      subtitle: subtitle,
