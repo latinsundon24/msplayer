@@ -298,14 +298,14 @@ final class Store: ObservableObject {
 
     // MARK: - JSON EPG（按频道按天按需拉取）
 
-    /// JSON 接口 `ch` 参数候选取值：同时尝试 tvg-id 与频道名。
-    /// 很多服务器是按「频道名」匹配，tvg-id 拉不到时自动回退到频道名，谁有数据用谁。
+    /// JSON 接口 `ch` 参数候选取值：优先用频道名（tvg-name），回退到 tvg-id。
+    /// 多数服务器按「频道名」匹配，故频道名优先；tvg-id 作为补充。
     private func epgChannelCandidates(_ channel: Channel) -> [String] {
         let tvg = (channel.tvgID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let name = channel.name.trimmingCharacters(in: .whitespacesAndNewlines)
         var c: [String] = []
-        if !tvg.isEmpty { c.append(tvg) }
-        if !name.isEmpty, !c.contains(name) { c.append(name) }
+        if !name.isEmpty { c.append(name) }
+        if !tvg.isEmpty, !c.contains(tvg) { c.append(tvg) }
         return c
     }
 

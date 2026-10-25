@@ -37,8 +37,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.msplayer.app
         PRODUCT_NAME: msplayer
-        MARKETING_VERSION: "1.9"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "1.10"
+        CURRENT_PROJECT_VERSION: "9"
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_CFBundleDisplayName: msplayer
         SUPPORTS_MACCATALYST: "NO"
@@ -49,8 +49,8 @@ targets:
       properties:
         CFBundleDisplayName: msplayer
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "1.9"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "1.10"
+        CFBundleVersion: "9"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
