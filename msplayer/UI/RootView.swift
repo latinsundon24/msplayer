@@ -505,7 +505,7 @@ struct ScrollActivityObserver: UIViewRepresentable {
             // 面板在用户滚动浏览节目单时也会被隐藏。
             var node: UIView? = self
             while let current = node {
-                if let scrollView = ScrollActivityObserver.firstScrollView(in: current) {
+                if let scrollView = ObserverView.firstScrollView(in: current) {
                     observation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
                         self?.onScroll?()
                     }
