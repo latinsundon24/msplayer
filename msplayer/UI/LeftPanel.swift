@@ -61,14 +61,6 @@ struct LeftPanel: View {
         .onChange(of: search) { _ in onInteraction() }
         .onChange(of: selectedTab) { _ in onInteraction() }
         .onChange(of: epgDayOffset) { _ in onInteraction() }
-        // 任意点击 / 拖拽（含滚动节目单）都重置左栏自动隐藏计时：
-        // 之前仅靠 ScrollActivityObserver 监听 UIScrollView，在节目单 tab 下不可靠，
-        // 导致滚动时面板仍被隐藏。这里用容器级手势统一兜底，对所有 tab 稳定生效。
-        .onTapGesture { onInteraction() }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 4)
-                .onChanged { _ in onInteraction() }
-        )
     }
 
     // MARK: - 头部
