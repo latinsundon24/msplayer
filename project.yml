@@ -51,8 +51,6 @@ targets:
       properties:
         CFBundleDisplayName: msplayer
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "1.11"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
