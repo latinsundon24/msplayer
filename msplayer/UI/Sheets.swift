@@ -280,9 +280,16 @@ struct SubscriptionsSheet: View {
                 Text("#KODIPROP:inputstream.adaptive.license_key=KID:KEY")
                 Text("#EXTVLCOPT:http-user-agent=…")
                 Text("#EXTVLCOPT:http-referrer=…")
+                Text("#EXTHTTP:{\"User-Agent\":\"…\",\"Referer\":\"…\"}")
             }
             .font(.system(size: 10, design: .monospaced))
             .foregroundColor(.white.opacity(0.45))
+
+            CardBox("自定义请求头") {
+                Text("#EXTHTTP 里的请求头会自动带上清单与分片请求（播放时走本地代理转发，绕开 AVPlayer 只在首次请求带头的限制）。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.45))
+            }
 
             if let message {
                 Text(message)

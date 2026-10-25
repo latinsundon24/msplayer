@@ -297,9 +297,45 @@ final class PlayerController: NSObject, ObservableObject {
     private func start(url: URL, headers: [String: String], channel: Channel) {
         if shouldUseVLC(url: url, channel: channel) {
             startVLC(url: url, headers: headers)
-        } else {
-            startSystem(url: url, headers: headers, channel: channel)
+            return
         }
+        // AVPlayer 的 AVURLAssetHTTPHeaderFieldsKey 只作用于「首次清单请求」，HLS 的子清单与分片请求不会继承。
+        // 而 #EXTHTTP / #EXTVLCOPT / |Referer=… 指定的头，往往是源站用来校验分片的（防盗链、鉴权），
+        // 分片缺头会 403 或一直转圈，且不一定让 AVPlayerItem 变成 failed —— 现有失败兜底等不到。
+        // 所以带自定义头时改走本地代理：代理由 URLSession 取数，清单和分片都会带上这些头。
+        if shouldProxyForCustomHeaders(url: url, headers: headers, channel: channel) {
+            do {
+                let proxy = try HLSProxy(channel: channel)
+                proxyAttempted = true
+                self.proxy = proxy
+                NSLog("[msplayer] custom headers -> local proxy: %@", headers.description)
+                startSystem(url: proxy.entryURL, headers: [:], channel: channel)
+                playbackMode = "HLS · 本地代理（自定义请求头）"
+                return
+            } catch {
+                NSLog("[msplayer] custom-header proxy start failed: %@", String(describing: error))
+            }
+        }
+        startSystem(url: url, headers: headers, channel: channel)
+    }
+
+    /// 只有「确实带了自定义头」且是 HTTP(S) 流式清单时才走代理。
+    /// 没有头的频道播放路径完全不变，避免引入回归。
+    private func shouldProxyForCustomHeaders(url: URL,
+                                             headers: [String: String],
+                                             channel: Channel) -> Bool {
+        guard !headers.isEmpty, !proxyAttempted, !channel.isDASH else { return false }
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+
+        let lower = url.absoluteString.lowercased()
+        // RTMP/RTSP/UDP/MMS 不走 HTTP，代理没有意义
+        if lower.hasPrefix("rtmp") || lower.hasPrefix("rtsp")
+            || lower.hasPrefix("udp") || lower.hasPrefix("mms") { return false }
+        // FLV / TS 是「一条持续不断的连接」，MP4 是点播文件：
+        // 本地代理是按「取回整个响应」的方式转发的，用在这些格式上反而播不了（会一直等或无法拖动），保持直连。
+        if lower.hasSuffix(".flv") || lower.hasSuffix(".ts")
+            || lower.hasSuffix(".mp4") || lower.hasSuffix(".m4v") { return false }
+        return true
     }
 
     // MARK: - 回看解码兜底
@@ -489,13 +525,21 @@ final class PlayerController: NSObject, ObservableObject {
 
         let media = VLCMedia(url: url)
         for (key, value) in headers {
-            switch key.lowercased() {
+            let name = key.lowercased()
+            let headerValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !headerValue.isEmpty else { continue }
+            // 换行会被 VLC 当成「下一个选项」，脏数据直接跳过，别让它污染播放参数
+            if name.rangeOfCharacter(from: .newlines) != nil { continue }
+            if headerValue.rangeOfCharacter(from: .newlines) != nil { continue }
+            // 注：VLC 只认 User-Agent / Referrer 这两个标准项；其余任意头它未必生效，
+            // 真正需要自定义头时由上面的本地代理路径保障（URLSession 会如实发出所有头）。
+            switch name {
             case "user-agent":
-                media.addOption(":http-user-agent=\(value)")
+                media.addOption(":http-user-agent=\(headerValue)")
             case "referer":
-                media.addOption(":http-referrer=\(value)")
+                media.addOption(":http-referrer=\(headerValue)")
             default:
-                media.addOption(":http-\(key.lowercased())=\(value)")
+                media.addOption(":http-\(name)=\(headerValue)")
             }
         }
         // 缓冲大小直接决定 HLS / DASH 分片交界处会不会顿一下：

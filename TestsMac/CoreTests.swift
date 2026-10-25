@@ -103,6 +103,107 @@ final class PlaylistParserTests: XCTestCase {
         XCTAssertEqual(channels.first?.headers["Cookie"], "a=b")
     }
 
+    // MARK: - #EXTHTTP
+
+    func testEXTHTTPJSONHeaders() {
+        let text = """
+        #EXTM3U
+        #EXTINF:-1 group-title="测试",某频道
+        #EXTHTTP:{"User-Agent":"Chrome/120","Referer":"https://ref.example.com/","X-Token":"abc123"}
+        http://example.com/live.m3u8
+        """
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels.count, 1)
+        XCTAssertEqual(channels[0].name, "某频道")
+        XCTAssertEqual(channels[0].url, "http://example.com/live.m3u8")
+        XCTAssertEqual(channels[0].headers["User-Agent"], "Chrome/120")
+        XCTAssertEqual(channels[0].headers["Referer"], "https://ref.example.com/")
+        XCTAssertEqual(channels[0].headers["X-Token"], "abc123")
+    }
+
+    func testEXTHTTPNestedHeadersObject() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"headers":{"Referer":"https://nested.example.com/","User-Agent":"NestedUA"}}
+        http://example.com/live.m3u8
+        """
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels[0].headers["Referer"], "https://nested.example.com/")
+        XCTAssertEqual(channels[0].headers["User-Agent"], "NestedUA")
+    }
+
+    func testEXTHTTPDegradedKeyValueForm() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:referer=https://deg.example.com/&user-agent=DegUA
+        http://example.com/live.m3u8
+        """
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels[0].headers["Referer"], "https://deg.example.com/")
+        XCTAssertEqual(channels[0].headers["User-Agent"], "DegUA")
+    }
+
+    func testEXTHTTPNumericAndBoolValues() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"Referer":"https://x.example.com/","Max-Age":3600,"Do-Fast":true}
+        http://example.com/live.m3u8
+        """
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels[0].headers["Max-Age"], "3600")
+        XCTAssertEqual(channels[0].headers["Do-Fast"], "true")
+    }
+
+    /// 同一个头来自不同标签时不能各留一份（否则 VLC 会下发两个 :http-*、AVPlayer 会当成两个头）
+    func testEXTHTTPDoesNotDuplicateHeadersFromVLCOpt() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTVLCOPT:http-referrer=https://vlc.example.com/
+        #EXTHTTP:{"Referer":"https://httptag.example.com/","Cookie":"sid=1"}
+        http://example.com/live.m3u8
+        """
+        let channels = PlaylistParser.parse(text)
+        let headers = channels[0].headers
+        XCTAssertEqual(headers.count, 2)
+        XCTAssertEqual(headers["Referer"], "https://httptag.example.com/")
+        XCTAssertEqual(headers["Cookie"], "sid=1")
+    }
+
+    /// 地址行里的 |头=值 优先级最高
+    func testPipeHeadersOverrideEXTHTTP() {
+        let text = """
+        #EXTINF:-1,某频道
+        #EXTHTTP:{"User-Agent":"from-ext"}
+        http://example.com/live.m3u8|User-Agent=from-pipe
+        """
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels[0].url, "http://example.com/live.m3u8")
+        XCTAssertEqual(channels[0].headers["User-Agent"], "from-pipe")
+    }
+
+    func testEXTHTTPAppliesToNextEntryOnly() {
+        let text = """
+        #EXTM3U
+        #EXTINF:-1,A频道
+        #EXTHTTP:{"Referer":"https://only-a.example.com/"}
+        http://example.com/a.m3u8
+        #EXTINF:-1,B频道
+        http://example.com/b.m3u8
+        """
+        let channels = PlaylistParser.parse(text)
+        XCTAssertEqual(channels.count, 2)
+        XCTAssertEqual(channels[0].headers["Referer"], "https://only-a.example.com/")
+        XCTAssertNil(channels[1].headers["Referer"])
+    }
+
+    func testCanonicalHeaderKey() {
+        XCTAssertEqual(PlaylistParser.canonicalHeaderKey("referrer"), "Referer")
+        XCTAssertEqual(PlaylistParser.canonicalHeaderKey("REFERER"), "Referer")
+        XCTAssertEqual(PlaylistParser.canonicalHeaderKey("ua"), "User-Agent")
+        XCTAssertEqual(PlaylistParser.canonicalHeaderKey("x-token"), "X-Token")
+        XCTAssertEqual(PlaylistParser.canonicalHeaderKey("USER-AGENT"), "User-Agent")
+    }
+
     func testClearKeyJSON() {
         let raw = """
         {"keys":[{"kty":"oct","kid":"feedf00deedeadbeeff0baadf00dd00d","k":"00112233445566778899aabbccddeeff"}]}

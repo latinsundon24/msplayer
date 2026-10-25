@@ -10,6 +10,7 @@ import Foundation
 ///   #EXTVLCOPT:http-user-agent=…
 ///   #EXTVLCOPT:http-referrer=…
 ///   #EXTVLCOPT:http-…=…
+///   #EXTHTTP:{"User-Agent":"…","Referer":"…"}（也吃 {"headers":{…}} 嵌套与 Referer=…&UA=… 退化写法）
 ///   http://x/y.m3u8|User-Agent=xx&Referer=yy
 ///   TXT：频道名,地址 / 频道名|地址 / 纯地址 / 分类,#genre#
 enum PlaylistParser {
@@ -119,6 +120,12 @@ enum PlaylistParser {
                 continue
             }
 
+            if line.uppercased().hasPrefix("#EXTHTTP:") {
+                let body = String(line.dropFirst("#EXTHTTP:".count))
+                applyExtHTTP(body, headers: &headers)
+                continue
+            }
+
             if line.hasPrefix("#") { continue }
 
             // TXT 分类标记：分类名,#genre#
@@ -152,8 +159,9 @@ enum PlaylistParser {
 
             let (url, pipeHeaders) = splitPipeOptions(rawURL)
             var mergedHeaders = headers
-            for (k, v) in pipeHeaders where mergedHeaders[k] == nil {
-                mergedHeaders[k] = v
+            // 地址行里的 |头=值 优先级最高，覆盖 #EXTHTTP / #EXTVLCOPT / #KODIPROP 的同名头
+            for (k, v) in pipeHeaders {
+                setHeader(k, value: v, into: &mergedHeaders)
             }
 
             let group = (pendingGroup?.isEmpty == false)
@@ -249,18 +257,131 @@ enum PlaylistParser {
         let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
         switch key {
         case "http-user-agent":
-            headers["User-Agent"] = value
+            setHeader("User-Agent", value: value, into: &headers)
         case "http-referrer", "http-referer":
-            headers["Referer"] = value
+            setHeader("Referer", value: value, into: &headers)
         case "http-origin":
-            headers["Origin"] = value
+            setHeader("Origin", value: value, into: &headers)
         case "http-cookie":
-            headers["Cookie"] = value
+            setHeader("Cookie", value: value, into: &headers)
         default:
             if key.hasPrefix("http-") {
-                headers[String(key.dropFirst(5))] = value
+                setHeader(String(key.dropFirst(5)), value: value, into: &headers)
             }
         }
+    }
+
+    // MARK: - #EXTHTTP
+
+    /// `#EXTHTTP:{"User-Agent":"Chrome","Referer":"https://x/"}`（OTT Navigator / OMG 等工具的写法）。
+    /// 键就是 HTTP 头名，可放任意自定义头。
+    ///
+    /// 兼容三种写法：
+    ///   1. JSON 对象：{"Referer":"…","X-Token":"…"}
+    ///   2. 嵌套：{"headers":{"Referer":"…"}}
+    ///   3. 退化：Referer=…&User-Agent=…（少数列表没写成 JSON）
+    /// 也容忍整段被 URL 编码过的 JSON。
+    private static func applyExtHTTP(_ body: String, headers: inout [String: String]) {
+        var text = body.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+
+        // 少数列表会对 JSON 做 URL 编码
+        if !text.hasPrefix("{"), text.contains("%"),
+           let decoded = text.removingPercentEncoding, decoded.contains("{") {
+            text = decoded.trimmingCharacters(in: .whitespaces)
+        }
+
+        if text.hasPrefix("{"),
+           let data = text.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data),
+           let dict = object as? [String: Any] {
+            collectHTTPHeaders(from: dict, headers: &headers)
+            return
+        }
+
+        // 退化写法
+        applyHeaderPairs(text, headers: &headers)
+    }
+
+    private static func collectHTTPHeaders(from dict: [String: Any], headers: inout [String: String]) {
+        for (rawKey, rawValue) in dict {
+            let key = rawKey.trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { continue }
+
+            // {"headers":{…}} / {"header":{…}} 这类嵌套包装
+            if let nested = rawValue as? [String: Any] {
+                collectHTTPHeaders(from: nested, headers: &headers)
+                continue
+            }
+            if let list = rawValue as? [[String: Any]] {
+                for item in list { collectHTTPHeaders(from: item, headers: &headers) }
+                continue
+            }
+
+            let value = headerValue(rawValue)
+            guard !value.isEmpty else { continue }
+            setHeader(key, value: value, into: &headers)
+        }
+    }
+
+    /// JSON 里的值可能是字符串、数字或布尔，统一转成头值文本。
+    private static func headerValue(_ value: Any) -> String {
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let number = value as? NSNumber {
+            // 布尔和整数在 JSON 里都是 NSNumber，只能用 objCType 区分：
+            // 'c' / 'B' 是布尔，否则按数字输出（否则 true 会变成 "1"）
+            let type = String(cString: number.objCType)
+            if type == "c" || type == "B" {
+                return number.boolValue ? "true" : "false"
+            }
+            return number.stringValue
+        }
+        return ""
+    }
+
+    // MARK: - 头名规范化
+
+    /// 统一 HTTP 头名写法。
+    /// 不同来源（#EXTHTTP / #EXTVLCOPT / |Referer= / stream_headers）大小写与别名各异，
+    /// 若不收敛会出现 "Referer" 与 "referer" 两个键——VLC 会下发两个 :http-* 选项，
+    /// AVPlayer 也会当成两个不同的头，源站反而可能拒绝。
+    static func canonicalHeaderKey(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        switch trimmed.lowercased() {
+        case "user-agent", "useragent", "ua": return "User-Agent"
+        case "referer", "referrer":          return "Referer"
+        case "origin":                       return "Origin"
+        case "cookie":                       return "Cookie"
+        case "host":                         return "Host"
+        case "accept":                       return "Accept"
+        case "accept-language":              return "Accept-Language"
+        case "accept-encoding":              return "Accept-Encoding"
+        case "authorization":                return "Authorization"
+        case "connection":                   return "Connection"
+        case "x-forwarded-for":              return "X-Forwarded-For"
+        default:
+            return trimmed
+                .split(separator: "-", omittingEmptySubsequences: false)
+                .map { part in
+                    guard let first = part.first else { return "" }
+                    return String(first).uppercased() + part.dropFirst().lowercased()
+                }
+                .joined(separator: "-")
+        }
+    }
+
+    /// 写入头：先删掉同义的旧键再写，避免重复。
+    static func setHeader(_ key: String, value: String, into headers: inout [String: String]) {
+        let canonical = canonicalHeaderKey(key)
+        // HTTP 头名不允许空白，脏数据直接丢弃，否则会在发出请求时炸掉（NSInvalidArgumentException）
+        guard !canonical.isEmpty,
+              canonical.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return }
+        // 先收集再删除：不能一边遍历字典的 keys 一边 removeValue（未定义行为）
+        let duplicates = headers.keys.filter { canonicalHeaderKey($0) == canonical }
+        for existing in duplicates { headers.removeValue(forKey: existing) }
+        headers[canonical] = value
     }
 
     /// "User-Agent=xxx&Referer=yyy" 形式
@@ -271,7 +392,11 @@ enum PlaylistParser {
             guard kv.count == 2 else { continue }
             let key = String(kv[0]).trimmingCharacters(in: .whitespaces)
             let value = String(kv[1]).trimmingCharacters(in: .whitespaces)
-            if !key.isEmpty, !value.isEmpty, headers[key] == nil { headers[key] = value }
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            let canonical = canonicalHeaderKey(key)
+            // KODIPROP stream_headers 既有语义：同一头已存在时不覆盖
+            guard !headers.keys.contains(where: { canonicalHeaderKey($0) == canonical }) else { continue }
+            headers[canonical] = value
         }
     }
 
@@ -304,15 +429,15 @@ enum PlaylistParser {
             guard !key.isEmpty, !value.isEmpty else { continue }
             switch key.lowercased() {
             case "user-agent", "useragent", "ua":
-                headers["User-Agent"] = value
+                setHeader("User-Agent", value: value, into: &headers)
             case "referer", "referrer":
-                headers["Referer"] = value
+                setHeader("Referer", value: value, into: &headers)
             case "origin":
-                headers["Origin"] = value
+                setHeader("Origin", value: value, into: &headers)
             case "cookie":
-                headers["Cookie"] = value
+                setHeader("Cookie", value: value, into: &headers)
             default:
-                headers[key] = value
+                setHeader(key, value: value, into: &headers)
             }
         }
         return (url, headers)

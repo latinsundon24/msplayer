@@ -17,7 +17,9 @@
   - `#KODIPROP:inputstream.adaptive.license_type=clearkey`
   - `#KODIPROP:inputstream.adaptive.license_key=KID:KEY`（也支持 JWK / data: / 远程 license URL）
   - `#EXTVLCOPT:http-user-agent=…`、`#EXTVLCOPT:http-referrer=…` 及任意 `#EXTVLCOPT:http-*`
+  - `#EXTHTTP:{"User-Agent":"…","Referer":"…"}`（也兼容 `{"headers":{…}}` 嵌套与 `Referer=…&User-Agent=…` 退化写法）
   - `http://…|User-Agent=…&Referer=…`
+  - 以上请求头会归一化去重（`Referer` / `referer` / `Referrer` 视为同一个头），并自动带上分片请求
 - 同名频道自动归并为多线路，频道列表只显示一次
 - 启动进入播放界面时左右边栏都隐藏；点击画面左侧切换左栏，点击右侧切换右栏，两栏互斥（显示一个时另一个自动隐藏）
 - 侧栏显示期间只要有触摸、滑动、输入等操作，就会重新开始自动隐藏计时；只有连续一段时间没有操作才会隐藏；弹出菜单打开时侧栏不会自动隐藏
