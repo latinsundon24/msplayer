@@ -268,6 +268,9 @@ final class DashPlayback {
             }
         }
 
+        // 跨 AdaptationSet 也要按码率从高到低，界面上的档位顺序才与画质一致
+        videoPicks.sort { $0.1.bandwidth > $1.1.bandwidth }
+
         videoTracks = Array(videoPicks.prefix(Self.maxVideoTracks)).enumerated().map { offset, pick in
             Track(index: offset,
                   prefix: "v\(offset)",

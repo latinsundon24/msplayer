@@ -69,7 +69,7 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     /// 记住用户手动选过的清晰度；`nil` 表示自动
-    private var preferredQualityKey: String = Self.autoQualityKey
+    private var preferredQualityKey: String = PlayerController.autoQualityKey
     private var preferredQualityLimit: Double?
     private var preferredQualityResolution: CGSize = .zero
 
@@ -133,6 +133,12 @@ final class PlayerController: NSObject, ObservableObject {
         item.preferredMaximumResolution = choice.resolution
     }
 
+    private func applyPreferredQuality(to item: AVPlayerItem) {
+        guard preferredQualityKey != Self.autoQualityKey else { return }
+        item.preferredPeakBitRate = preferredQualityLimit ?? 0
+        item.preferredMaximumResolution = preferredQualityResolution
+    }
+
     /// 播放过程中把清晰度上限重新套一遍。
     ///
     /// 直播清单会不断刷新，万一某个环节把上限清掉，这里能把选择补回来，
@@ -142,8 +148,7 @@ final class PlayerController: NSObject, ObservableObject {
               let item = avPlayer.currentItem else { return }
         let limit = preferredQualityLimit ?? 0
         if item.preferredPeakBitRate != limit {
-            item.preferredPeakBitRate = limit
-            item.preferredMaximumResolution = preferredQualityResolution
+            applyPreferredQuality(to: item)
         }
     }
 
@@ -318,10 +323,7 @@ final class PlayerController: NSObject, ObservableObject {
     /// 新 item 就绪后重新套用用户上次手动选过的音轨 / 字幕 / 清晰度
     private func applyPreferredMediaSelections(_ item: AVPlayerItem) {
         // 清晰度不依赖 asset 属性就绪，先套上，避免起播那一瞬间先跑到最高码率再降下来
-        if preferredQualityKey != Self.autoQualityKey {
-            item.preferredPeakBitRate = preferredQualityLimit ?? 0
-            item.preferredMaximumResolution = preferredQualityResolution
-        }
+        applyPreferredQuality(to: item)
         Self.onSelectionReady(item.asset) { [weak self] in
             guard let self, item === self.avPlayer.currentItem else { return }
             self.apply(self.preferredAudible, item: item, characteristic: .audible)
@@ -884,6 +886,8 @@ final class PlayerController: NSObject, ObservableObject {
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
         let asset = options.map { AVURLAsset(url: url, options: $0) } ?? AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
+        // 起播前就把清晰度上限套上，免得先拉最高码率再降回来
+        applyPreferredQuality(to: item)
 
         if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
