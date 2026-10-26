@@ -73,6 +73,27 @@ final class DashPlayback {
     private static let maxAudioTracks = 4
     private static let maxSubtitleTracks = 4
 
+    /// 主清单里两条 `#EXT-X-STREAM-INF` 之间的最小带宽间隔（bps）。
+    ///
+    /// 选清晰度是靠 `AVPlayerItem.preferredPeakBitRate` 设上限实现的，
+    /// BANDWIDTH 必须互不相同才有办法唯一指定某一档。
+    private static let bandwidthGap = 100_000
+
+    /// 一档可选清晰度：对应主清单里的一条 `#EXT-X-STREAM-INF`。
+    struct VideoQuality {
+        /// 在 `videoTracks` 里的下标，一次播放会话内稳定不变
+        let index: Int
+        let width: Int
+        let height: Int
+        /// 视频自身的码率（MPD 的 bandwidth）
+        let bandwidth: Int
+        /// 主清单里这一档声明的 BANDWIDTH（视频 + 音频），严格递减
+        let variantBandwidth: Int
+    }
+
+    /// 每档清晰度声明的 BANDWIDTH，下标与 `videoTracks` 对齐
+    private var variantBandwidths: [Int] = []
+
     let channel: Channel
     private var manifestURL: URL
 
@@ -271,6 +292,53 @@ final class DashPlayback {
                   lang: pick.0.lang,
                   title: Self.displayName(for: pick.0.lang, kind: .subtitle, index: offset))
         }
+
+        rebuildVariantBandwidths()
+    }
+
+    // MARK: - 清晰度（多码率 / 多分辨率）
+
+    /// 可选清晰度，按画质从高到低排列（`videoTracks` 已按 bandwidth 降序）。
+    ///
+    /// 没有视频轨道时返回空数组（纯音频流没有清晰度可选）。
+    var videoQualities: [VideoQuality] {
+        videoTracks.enumerated().map { index, track in
+            VideoQuality(index: index,
+                         width: track.stream.width ?? 0,
+                         height: track.stream.height ?? 0,
+                         bandwidth: track.stream.bandwidth,
+                         variantBandwidth: declaredBandwidth(for: index))
+        }
+    }
+
+    /// 第 `index` 档清晰度在主清单里声明的 BANDWIDTH
+    private func declaredBandwidth(for index: Int) -> Int {
+        if variantBandwidths.indices.contains(index) { return variantBandwidths[index] }
+        guard videoTracks.indices.contains(index) else { return 200_000 }
+        let audioBandwidth = audioTracks.first?.stream.bandwidth ?? 0
+        return max(videoTracks[index].stream.bandwidth, 200_000) + audioBandwidth
+    }
+
+    /// 重算每档清晰度声明的 BANDWIDTH = 视频 bandwidth + 首条音轨 bandwidth。
+    ///
+    /// 必须严格递减且彼此留出间隔：源端完全可能给出两档带宽相同的 Representation
+    /// （或干脆缺 bandwidth），那样按带宽上限就选不出想要的那一档了。
+    private func rebuildVariantBandwidths() {
+        let audioBandwidth = audioTracks.first?.stream.bandwidth ?? 0
+        var list: [Int] = []
+        var last = Int.max
+        for track in videoTracks {
+            let raw = max(track.stream.bandwidth, 200_000) + audioBandwidth
+            var value = raw
+            if value >= last {
+                // 源端缺 bandwidth 或给出重复值时逐级往下排一格，保证严格递减、互不相等
+                value = last > Self.bandwidthGap ? last - Self.bandwidthGap : last - 1
+                if value <= 0 { value = 1 }
+            }
+            list.append(value)
+            last = value
+        }
+        variantBandwidths = list
     }
 
     /// 快进预览流的判定：Representation id 带 TrickMode，或分片模板用了 i 帧专用的 .cmfi
@@ -658,10 +726,10 @@ final class DashPlayback {
             }
         }
 
-        for track in videoTracks {
+        for (index, track) in videoTracks.enumerated() {
             var attributes: [String] = []
-            let audioBandwidth = audioTracks.first?.stream.bandwidth ?? 0
-            attributes.append("BANDWIDTH=\(max(track.stream.bandwidth, 200_000) + audioBandwidth)")
+            // 用统一算出来的那一档带宽，保证 UI 上的可选档位与清单里的 variant 一一对应
+            attributes.append("BANDWIDTH=\(declaredBandwidth(for: index))")
 
             var codecs: [String] = []
             if let videoCodec = track.stream.representation.codecs, !videoCodec.isEmpty { codecs.append(videoCodec) }

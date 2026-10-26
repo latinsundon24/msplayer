@@ -47,6 +47,123 @@ final class PlayerController: NSObject, ObservableObject {
 
     /// 「关闭」这一项的标识
     static let offKey = "off"
+    /// 清晰度选「自动」时的标识
+    static let autoQualityKey = "auto"
+
+    /// 一档可选清晰度。
+    ///
+    /// 切换靠 `AVPlayerItem.preferredPeakBitRate` 设上限实现：播放器只会在
+    /// BANDWIDTH 不超过上限的 variant 里挑最高的一档。DASH 走的是本机代理，
+    /// 实测吞吐几乎无限，于是「上限 = 某一档的 BANDWIDTH」能精确落到那一档。
+    struct VideoQualityChoice: Identifiable {
+        let key: String
+        let title: String
+        let detail: String?
+        /// nil 表示「自动」（不限码率，由播放器按网络挑）
+        let bandwidthLimit: Double?
+        /// 配套的分辨率上限，进一步把选择钉死在指定那一档
+        let resolution: CGSize
+
+        var id: String { key }
+        var isAuto: Bool { bandwidthLimit == nil }
+    }
+
+    /// 记住用户手动选过的清晰度；`nil` 表示自动
+    private var preferredQualityKey: String = Self.autoQualityKey
+    private var preferredQualityLimit: Double?
+    private var preferredQualityResolution: CGSize = .zero
+
+    /// 读取当前 DASH 流提供的清晰度档位；不足两档就返回空数组（没有可选项）。
+    func loadVideoQualityChoices(completion: @escaping @MainActor ([VideoQualityChoice]) -> Void) {
+        let qualities = dash?.videoQualities ?? []
+        guard qualities.count > 1 else {
+            completion([])
+            return
+        }
+
+        var list: [VideoQualityChoice] = [VideoQualityChoice(key: Self.autoQualityKey,
+                                                            title: "自动",
+                                                            detail: "按网络状况选择",
+                                                            bandwidthLimit: nil,
+                                                            resolution: .zero)]
+        // 同名（同分辨率不同码率）要补序号，否则界面上会出现「行行都像被选中」
+        var used: [String: Int] = [:]
+        for quality in qualities {
+            let base = Self.qualityTitle(quality)
+            let seen = used[base] ?? 0
+            used[base] = seen + 1
+            list.append(VideoQualityChoice(key: "q\(quality.index)",
+                                           title: seen == 0 ? base : "\(base) #\(seen + 1)",
+                                           detail: Self.qualityDetail(quality),
+                                           bandwidthLimit: Double(quality.variantBandwidth),
+                                           resolution: CGSize(width: CGFloat(quality.width),
+                                                             height: CGFloat(quality.height))))
+        }
+        completion(list)
+    }
+
+    /// 当前选中的清晰度 key（读的是上次落地的选择，保证再进面板还是那一项）
+    func currentVideoQualityKey() -> String { preferredQualityKey }
+
+    /// 实际在播的码率（bit/s），取 `AVPlayerItem` 访问日志里最近一次上报值
+    func currentPlayingBitrate() -> Double? {
+        guard let event = avPlayer.currentItem?.accessLog()?.events.last else { return nil }
+        return event.indicatedBitrate > 0 ? event.indicatedBitrate : nil
+    }
+
+    /// 选中某一档清晰度。
+    ///
+    /// 不需要重建 item —— 播放器会在下一个分片边界切过去，直播不会中断。
+    func selectVideoQuality(_ choice: VideoQualityChoice,
+                            completion: (@MainActor (Bool) -> Void)? = nil) {
+        preferredQualityKey = choice.key
+        preferredQualityLimit = choice.bandwidthLimit
+        preferredQualityResolution = choice.resolution
+        guard let item = avPlayer.currentItem else {
+            completion?(false)
+            return
+        }
+        Self.applyQuality(choice, to: item)
+        completion?(true)
+    }
+
+    private static func applyQuality(_ choice: VideoQualityChoice, to item: AVPlayerItem) {
+        // 上限设为 0 = 不限制（自动）；AVPlayer 会在不超过上限的档里挑最高的
+        item.preferredPeakBitRate = choice.bandwidthLimit ?? 0
+        item.preferredMaximumResolution = choice.resolution
+    }
+
+    /// 播放过程中把清晰度上限重新套一遍。
+    ///
+    /// 直播清单会不断刷新，万一某个环节把上限清掉，这里能把选择补回来，
+    /// 否则会悄悄跳回最高码率（表现为「选了没用」）。
+    private func enforceQualityPreference() {
+        guard preferredQualityKey != Self.autoQualityKey,
+              let item = avPlayer.currentItem else { return }
+        let limit = preferredQualityLimit ?? 0
+        if item.preferredPeakBitRate != limit {
+            item.preferredPeakBitRate = limit
+            item.preferredMaximumResolution = preferredQualityResolution
+        }
+    }
+
+    private static func qualityTitle(_ quality: DashPlayback.VideoQuality) -> String {
+        if quality.height > 0 { return "\(quality.height)p" }
+        if quality.bandwidth > 0 { return "\(quality.bandwidth / 1000) kbps" }
+        return "清晰度 \(quality.index + 1)"
+    }
+
+    private static func qualityDetail(_ quality: DashPlayback.VideoQuality) -> String? {
+        var parts: [String] = []
+        if quality.width > 0, quality.height > 0 {
+            parts.append("\(quality.width)×\(quality.height)")
+        }
+        if quality.bandwidth > 0 {
+            let mbps = Double(quality.bandwidth) / 1_000_000
+            parts.append(mbps >= 1 ? String(format: "%.1f Mbps", mbps) : "\(quality.bandwidth / 1000) kbps")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     /// 一条可选的音轨或字幕。
     ///
@@ -198,8 +315,13 @@ final class PlayerController: NSObject, ObservableObject {
         }
     }
 
-    /// 新 item 就绪后重新套用用户上次手动选过的音轨 / 字幕
+    /// 新 item 就绪后重新套用用户上次手动选过的音轨 / 字幕 / 清晰度
     private func applyPreferredMediaSelections(_ item: AVPlayerItem) {
+        // 清晰度不依赖 asset 属性就绪，先套上，避免起播那一瞬间先跑到最高码率再降下来
+        if preferredQualityKey != Self.autoQualityKey {
+            item.preferredPeakBitRate = preferredQualityLimit ?? 0
+            item.preferredMaximumResolution = preferredQualityResolution
+        }
         Self.onSelectionReady(item.asset) { [weak self] in
             guard let self, item === self.avPlayer.currentItem else { return }
             self.apply(self.preferredAudible, item: item, characteristic: .audible)
@@ -304,6 +426,8 @@ final class PlayerController: NSObject, ObservableObject {
             videoSize = size
             resolution = ResolutionLabel.text(for: size) ?? ""
         }
+
+        enforceQualityPreference()
 
         if item.status == .failed {
             reportSystemError(item)
@@ -986,6 +1110,8 @@ final class PlayerController: NSObject, ObservableObject {
         lines.append("解码：\(decoderName)")
         lines.append("MPV 内核：\(canUseMPV ? "已集成" : "未集成")")
         lines.append("回看：\(isCatchUpPlayback ? "是" : "否")")
+        let auto = preferredQualityKey == Self.autoQualityKey
+        lines.append("清晰度：\(auto ? "自动" : "手动（上限 \(Int((preferredQualityLimit ?? 0) / 1000)) kbps）")")
         if backend == .system, let item = avPlayer.currentItem {
             lines.append("Item：status=\(item.status.rawValue) 轨道=\(item.tracks.count)")
         }
