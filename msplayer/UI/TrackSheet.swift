@@ -5,7 +5,11 @@ import SwiftUI
 ///
 /// 选项直接来自 `AVPlayerItem` 的 media selection group —— 也就是 `DashPlayback`
 /// 生成主清单时写进去的那些 `#EXT-X-MEDIA`（音轨 / 字幕）。
-/// 源端没提供多轨时，对应的分组会显示空提示。
+///
+/// 两个要点：
+/// 1. 打勾依据是从播放器**读回来**的真实选中项（`selectedMediaOption`），不是清单里的默认值，
+///    所以进来就是当前真正生效的那一条。
+/// 2. 行身份用 `key` 而不是标题 —— 多条轨道的显示名有可能完全一样，用标题比较会出现「全都打勾」。
 struct TrackSheet: View {
 
     @ObservedObject var player: PlayerController
@@ -14,19 +18,26 @@ struct TrackSheet: View {
 
     @State private var audioChoices: [PlayerController.MediaTrackChoice] = []
     @State private var subtitleChoices: [PlayerController.MediaTrackChoice] = []
-    @State private var selectedAudio: String?
-    @State private var selectedSubtitle: String?
+    @State private var audioKey: String?
+    @State private var subtitleKey: String?
+    @State private var hint: String?
 
     var body: some View {
         SheetShell("音轨与字幕") {
             section(title: "音轨",
                     choices: audioChoices,
-                    selected: selectedAudio,
+                    selected: audioKey,
                     isSubtitle: false)
             section(title: "字幕",
                     choices: subtitleChoices,
-                    selected: selectedSubtitle,
+                    selected: subtitleKey,
                     isSubtitle: true)
+
+            if let hint {
+                Text(hint)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+            }
         }
         .onAppear { reload() }
     }
@@ -54,18 +65,12 @@ struct TrackSheet: View {
                      selected: String?,
                      isSubtitle: Bool) -> some View {
         Button {
-            if isSubtitle {
-                selectedSubtitle = choice.title
-                player.selectMediaTrack(choice.option, characteristic: .legible)
-            } else {
-                selectedAudio = choice.title
-                player.selectMediaTrack(choice.option, characteristic: .audible)
-            }
+            pick(choice, characteristic: isSubtitle ? .legible : .audible)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon(for: choice, isSubtitle: isSubtitle))
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(selected == choice.title ? .cyan : .white.opacity(0.45))
+                    .foregroundColor(selected == choice.key ? .cyan : .white.opacity(0.45))
                     .frame(width: 20)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -83,7 +88,7 @@ struct TrackSheet: View {
 
                 Spacer(minLength: 4)
 
-                if selected == choice.title {
+                if selected == choice.key {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.cyan)
                 }
@@ -94,28 +99,68 @@ struct TrackSheet: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - 交互
+
+    private func reload() {
+        hint = nil
+        load(.audible, allowsOff: false) { choices, key in
+            audioChoices = choices
+            audioKey = key ?? choices.first(where: { !$0.isOff })?.key
+        }
+        load(.legible, allowsOff: true) { choices, key in
+            subtitleChoices = choices
+            subtitleKey = key ?? PlayerController.offKey
+        }
+    }
+
+    private func load(_ characteristic: AVMediaCharacteristic,
+                      allowsOff: Bool,
+                      apply: @escaping @MainActor ([PlayerController.MediaTrackChoice], String?) -> Void) {
+        player.loadMediaTrackChoices(characteristic, allowsOff: allowsOff) { choices in
+            player.currentMediaTrackKey(characteristic) { key in
+                apply(choices, key)
+            }
+        }
+    }
+
+    private func pick(_ choice: PlayerController.MediaTrackChoice,
+                      characteristic: AVMediaCharacteristic) {
+        hint = nil
+        player.selectMediaTrack(choice.option, characteristic: characteristic) { applied in
+            guard let applied else {
+                hint = "这一项当前不可用（源端暂时没有提供该轨道）"
+                return
+            }
+            setKey(applied, for: characteristic)
+            if applied != choice.key {
+                hint = "已切到该项的其他等效轨道"
+            }
+            // 直播刷新 / 播放器内部调整有可能把它改回去，稍后复核一次显示真实结果
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                resync(characteristic)
+            }
+        }
+    }
+
+    private func resync(_ characteristic: AVMediaCharacteristic) {
+        player.currentMediaTrackKey(characteristic) { key in
+            guard let key else { return }
+            setKey(key, for: characteristic)
+        }
+    }
+
+    private func setKey(_ key: String, for characteristic: AVMediaCharacteristic) {
+        if characteristic == .audible {
+            audioKey = key
+        } else {
+            subtitleKey = key
+        }
+    }
+
     // MARK: - 工具
 
     private func icon(for choice: PlayerController.MediaTrackChoice, isSubtitle: Bool) -> String {
         if choice.isOff { return "xmark.circle" }
         return isSubtitle ? "captions.bubble" : "waveform"
-    }
-
-    private func reload() {
-        let trim = { (text: String?) -> String? in
-            let value = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty ? nil : value
-        }
-        selectedAudio = trim(player.defaultMediaTrack(.audible)?.displayName)
-        // 字幕默认是没有勾的（清单里写的是 DEFAULT=NO），这里先按「关闭」显示
-        selectedSubtitle = trim(player.defaultMediaTrack(.legible)?.displayName) ?? "关闭"
-
-        player.loadMediaTrackChoices(.audible) { choices in
-            audioChoices = choices
-            if selectedAudio == nil { selectedAudio = choices.first?.title }
-        }
-        player.loadMediaTrackChoices(.legible, allowsOff: true) { choices in
-            subtitleChoices = choices
-        }
     }
 }

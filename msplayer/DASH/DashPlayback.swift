@@ -298,13 +298,21 @@ final class DashPlayback {
         "vie": "越南文", "vi": "越南文"
     ]
 
+    /// 展示名：能用语言名就用语言名，并附上源端的原始 lang 片段。
+    ///
+    /// 必须保证同一组内不重名 —— 重名会让选择界面出现「每一行都像被选上」而无法分辨。
     private static func displayName(for lang: String?, kind: DASHStream.Kind, index: Int) -> String {
-        if let lang, !lang.isEmpty, let hit = languageNames[lang.lowercased()] { return hit }
+        let fallback: String
         switch kind {
-        case .video: return "清晰度 \(index + 1)"
-        case .audio: return "音轨 \(index + 1)"
-        case .subtitle: return "字幕 \(index + 1)"
+        case .video: fallback = "清晰度 \(index + 1)"
+        case .audio: fallback = "音轨 \(index + 1)"
+        case .subtitle: fallback = "字幕 \(index + 1)"
         }
+        guard let lang, !lang.isEmpty else { return fallback }
+        let base = languageNames[lang.lowercased()] ?? fallback
+        if base == lang { return fallback }
+        if lang.count > 12 { return "\(base) \(fallback)" }
+        return "\(base) (\(lang))"
     }
 
     /// 只有像 `zh` / `chs` / `en-us` 这种才是合法 BCP-47 片段；
@@ -613,8 +621,11 @@ final class DashPlayback {
             }
         }
         if !subtitleTracks.isEmpty {
+            // 不带 URI 的 rendition 代表「关闭字幕」：既让这一组允许空选择，
+            // 也让系统选择界面里出现一个看得见的「关闭」项（否则选了关不掉）。
+            text += "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"sub\",NAME=\"关闭\",DEFAULT=YES,AUTOSELECT=YES\n"
             for track in subtitleTracks {
-                // 字幕默认关：避免还没验证过的转换结果一进来就糊在画面上
+                // 真实的字幕轨一律默认关：避免还没验证过的转换结果一进来就糊在画面上
                 text += mediaTag("SUBTITLES", group: "sub", track: track,
                                  defaulted: false, autoselect: false)
             }

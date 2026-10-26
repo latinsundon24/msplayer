@@ -45,67 +45,179 @@ final class PlayerController: NSObject, ObservableObject {
 
     // MARK: - 音轨 / 字幕（多语言直播）
 
-    /// 一条可选的音轨或字幕
+    /// 「关闭」这一项的标识
+    static let offKey = "off"
+
+    /// 一条可选的音轨或字幕。
+    ///
+    /// `key` 而不是标题用来标识身份：多条轨道的 `displayName` 有可能完全一样
+    /// （例如源端没给有效语言名时，AVFoundation 会把几条都叫同一个名字），
+    /// 用标题比较会让界面出现「所有行都打着勾」的假象。
     struct MediaTrackChoice: Identifiable {
-        let id: String
+        let key: String
         let title: String
         let detail: String?
         /// nil 表示「关闭这一轨」
         let option: AVMediaSelectionOption?
 
+        var id: String { key }
         var isOff: Bool { option == nil }
-
-        init(title: String, detail: String?, option: AVMediaSelectionOption?) {
-            self.id = title
-            self.title = title
-            self.detail = detail
-            self.option = option
-        }
     }
 
-    /// 读取某个特性（`.audible` 音轨 / `.legible` 字幕）当前可选的项目。
-    ///
-    /// `AVAsset` 要先加载 `availableMediaCharacteristicsWithMediaSelectionOptions` 才能拿到 group，
-    /// 所以走 `loadValuesAsynchronously`，结果回主线程。
+    /// asset 的这个 key 没加载完时，`mediaSelectionGroup` 会返回 nil，切换会静默失败
+    private static let selectionKey = "availableMediaCharacteristicsWithMediaSelectionOptions"
+
+    /// 记住用户手动选过的音轨 / 字幕，换台后再放同一条时会自动套用
+    private var preferredAudible: (key: String, name: String)?
+    private var preferredLegible: (key: String, name: String)?
+
+    /// 读取某个特性（`.audible` 音轨 / `.legible` 字幕）的可选项，回主线程回调。
     ///
     /// - Parameters:
     ///   - characteristic: 要读取的特性。
-    ///   - allowsOff: 是否额外给出「关闭」项（字幕需要，音轨一般不需要）。
+    ///   - allowsOff: 组里本来没有「关闭」项时，额外补一条（字幕需要，音轨不需要）。
     func loadMediaTrackChoices(_ characteristic: AVMediaCharacteristic,
                                allowsOff: Bool = false,
-                               completion: @escaping ([MediaTrackChoice]) -> Void) {
+                               completion: @escaping @MainActor ([MediaTrackChoice]) -> Void) {
         guard let item = avPlayer.currentItem else {
             completion([])
             return
         }
         let asset = item.asset
-        asset.loadValuesAsynchronously(forKeys: ["availableMediaCharacteristicsWithMediaSelectionOptions"]) {
+        Self.onSelectionReady(asset) {
             let group = asset.mediaSelectionGroup(forMediaCharacteristic: characteristic)
-            var choices: [MediaTrackChoice] = []
-            for option in group?.options ?? [] {
-                let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                let resolved = name.isEmpty ? "未命名" : name
-                let detail = option.extendedLanguageTag ?? option.locale?.identifier
-                choices.append(MediaTrackChoice(title: resolved, detail: detail, option: option))
+            var choices = Self.makeChoices(from: group)
+            let hasOff = choices.contains { Self.looksLikeOff($0.title) }
+            if allowsOff, !hasOff, group?.allowsEmptySelection == true {
+                choices.append(MediaTrackChoice(key: Self.offKey, title: "关闭", detail: nil, option: nil))
             }
-            if allowsOff {
-                choices.append(MediaTrackChoice(title: "关闭", detail: nil, option: nil))
-            }
-            DispatchQueue.main.async { completion(choices) }
+            completion(choices)
         }
     }
 
-    /// 该特性的默认选项，用来给列表打初始勾（拿不到则返回 nil）
-    func defaultMediaTrack(_ characteristic: AVMediaCharacteristic) -> AVMediaSelectionOption? {
-        guard let item = avPlayer.currentItem else { return nil }
-        return item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic)?.defaultOption
+    /// 当前真实生效的那一项（读 `AVPlayerItem.selectedMediaOption`，而不是清单里的 DEFAULT）
+    func currentMediaTrackKey(_ characteristic: AVMediaCharacteristic,
+                              completion: @escaping @MainActor (String?) -> Void) {
+        guard let item = avPlayer.currentItem else {
+            completion(nil)
+            return
+        }
+        Self.onSelectionReady(item.asset) {
+            completion(Self.resolvedKey(item: item, characteristic: characteristic))
+        }
     }
 
-    /// 切换音轨 / 字幕；`option` 传 nil 表示关闭
-    func selectMediaTrack(_ option: AVMediaSelectionOption?, characteristic: AVMediaCharacteristic) {
-        guard let item = avPlayer.currentItem,
+    /// 切换音轨 / 字幕；`option` 传 nil 表示关闭。
+    ///
+    /// `completion` 回传切换后实际生效的 key —— 拿不到就说明这一下没成功，
+    /// 界面依此显示真实结果而不是打一个假勾。
+    func selectMediaTrack(_ option: AVMediaSelectionOption?,
+                          characteristic: AVMediaCharacteristic,
+                          completion: (@MainActor (String?) -> Void)? = nil) {
+        guard let item = avPlayer.currentItem else {
+            completion?(nil)
+            return
+        }
+        let asset = item.asset
+        Self.onSelectionReady(asset) {
+            guard item === self.avPlayer.currentItem,
+                  let group = asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else {
+                completion?(nil)
+                return
+            }
+            if option == nil, !group.allowsEmptySelection {
+                // 这一组不允许为空（音轨通常如此），关不掉就直接把现状回给界面
+                completion?(Self.resolvedKey(item: item, characteristic: characteristic))
+                return
+            }
+            item.select(option, in: group)
+
+            let applied = Self.resolvedKey(item: item, characteristic: characteristic)
+            self.preferredValue(characteristic,
+                                key: applied ?? Self.offKey,
+                                name: option?.displayName ?? "")
+            completion?(applied)
+        }
+    }
+
+    // MARK: - 内部：多轨选择
+
+    private static func makeChoices(from group: AVMediaSelectionGroup?) -> [MediaTrackChoice] {
+        guard let group else { return [] }
+        var count: [String: Int] = [:]
+        var result: [MediaTrackChoice] = []
+        for (offset, option) in group.options.enumerated() {
+            let raw = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = raw.isEmpty ? "未命名" : raw
+            // 同名补序号，保证界面上每一项都能被分辨（重名会让「打勾」判断失真）
+            let seen = count[title] ?? 0
+            count[title] = seen + 1
+            let unique = seen == 0 ? title : "\(title) #\(seen + 1)"
+            let detail = option.extendedLanguageTag ?? option.locale?.identifier
+            result.append(MediaTrackChoice(key: "opt-\(offset)", title: unique, detail: detail, option: option))
+        }
+        return result
+    }
+
+    /// AVFoundation 对「无 URI 的 rendition」（即代表关闭的那一项）会给出这种名字
+    private static func looksLikeOff(_ text: String) -> Bool {
+        let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower == "off" || lower == "关闭" || lower == "none" || lower == "无" || lower == "不显示字幕"
+    }
+
+    /// asset 那个关键属性没加载完时必须异步等一下再放行，保证后面的操作都在主线程执行
+    private static func onSelectionReady(_ asset: AVAsset, run: @escaping @MainActor () -> Void) {
+        if asset.statusOfValue(forKey: selectionKey) == .loaded {
+            Task { @MainActor in run() }
+            return
+        }
+        asset.loadValuesAsynchronously(forKeys: [selectionKey]) {
+            Task { @MainActor in run() }
+        }
+    }
+
+    /// 从 item 读回当前真实选中的 key；没有选中所有则认为是「关闭」
+    private static func resolvedKey(item: AVPlayerItem, characteristic: AVMediaCharacteristic) -> String? {
+        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return nil }
+        guard let current = item.selectedMediaOption(in: group) else { return offKey }
+        if let index = group.options.firstIndex(where: { $0 === current }) { return "opt-\(index)" }
+        // 不同次读取可能返回不同实例，退回按名字匹配
+        if let index = group.options.firstIndex(where: { $0.displayName == current.displayName }) {
+            return "opt-\(index)"
+        }
+        return nil
+    }
+
+    private func preferredValue(_ characteristic: AVMediaCharacteristic, key: String, name: String) {
+        if characteristic == .audible {
+            preferredAudible = (key, name)
+        } else if characteristic == .legible {
+            preferredLegible = (key, name)
+        }
+    }
+
+    /// 新 item 就绪后重新套用用户上次手动选过的音轨 / 字幕
+    private func applyPreferredMediaSelections(_ item: AVPlayerItem) {
+        Self.onSelectionReady(item.asset) { [weak self] in
+            guard let self, item === self.avPlayer.currentItem else { return }
+            self.apply(self.preferredAudible, item: item, characteristic: .audible)
+            self.apply(self.preferredLegible, item: item, characteristic: .legible)
+        }
+    }
+
+    private func apply(_ preferred: (key: String, name: String)?,
+                       item: AVPlayerItem,
+                       characteristic: AVMediaCharacteristic) {
+        guard let preferred,
               let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return }
-        item.select(option, in: group)
+        if preferred.key == Self.offKey {
+            if group.allowsEmptySelection { item.select(nil, in: group) }
+            return
+        }
+        let target = group.options.enumerated().first { index, option in
+            "opt-\(index)" == preferred.key || option.displayName == preferred.name
+        }?.element
+        if let target { item.select(target, in: group) }
     }
 
     // MARK: - 私有状态
@@ -136,6 +248,10 @@ final class PlayerController: NSObject, ObservableObject {
         avPlayer.actionAtItemEnd = .pause
         avPlayer.automaticallyWaitsToMinimizeStalling = true
         avPlayer.allowsExternalPlayback = true
+        // 关键：默认为 true 时 AVPlayer 会按系统语言 / 无障碍偏好「自动选择」音轨与字幕，
+        // 把用户在设置里手动选好的一遍(EventLoop)覆盖回去 —— 表现为「选完再进去又是没选的状态」。
+        // 关掉自动选择后，`AVPlayerItem.select(_:in:)` 的结果才会被保留。
+        avPlayer.appliesMediaSelectionCriteriaAutomatically = false
 
         timeObserver = avPlayer.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
@@ -652,7 +768,11 @@ final class PlayerController: NSObject, ObservableObject {
             Task { @MainActor in
                 guard item === self.avPlayer.currentItem else { return }
                 if item.status == .failed { self.reportSystemError(item) }
-                if item.status == .readyToPlay { self.onPlaybackStarted?() }
+                if item.status == .readyToPlay {
+                    self.onPlaybackStarted?()
+                    // 换台 / 重建 item 后，把用户上次手动选过的音轨与字幕重新套上
+                    self.applyPreferredMediaSelections(item)
+                }
             }
         }
 
