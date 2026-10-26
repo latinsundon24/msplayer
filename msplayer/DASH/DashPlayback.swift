@@ -334,6 +334,8 @@ final class DashPlayback {
         defer { lock.unlock() }
 
         if let video = videoStream {
+            // 直播时间线随服务端前移，先用本次清单刷新模板再算窗口
+            video.syncTemplate(from: doc)
             let segments = video.liveSegments(now: now,
                                               availabilityStart: doc.availabilityStartTime,
                                               timeShiftBuffer: doc.timeShiftBufferDepth)
@@ -341,6 +343,7 @@ final class DashPlayback {
                    lastTime: &lastTimeVideo, dropped: &droppedVideo, kind: "v", initial: initial)
         }
         if let audio = audioStream {
+            audio.syncTemplate(from: doc)
             let segments = audio.liveSegments(now: now,
                                               availabilityStart: doc.availabilityStartTime,
                                               timeShiftBuffer: doc.timeShiftBufferDepth)
@@ -423,14 +426,20 @@ final class DashPlayback {
                 let interval = max(1.0, min(self.document?.minimumUpdatePeriod ?? 2, 6))
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled || self.stopped { return }
-                guard let doc = self.document, let period = doc.periods.first else { continue }
+                guard self.document != nil else { continue }
                 do {
                     let response = try await HTTPService.fetch(self.channel.url, headers: self.channel.headers)
-                    if let fresh = MPDParser.parse(data: response.data), !fresh.periods.isEmpty {
-                        self.document = fresh
-                        self.refreshWindow(doc: fresh, period: fresh.periods.first ?? period, initial: false)
-                        self.prefetchLatest()
-                    }
+                    guard let fresh = MPDParser.parse(data: response.data),
+                          let freshPeriod = fresh.periods.first else { continue }
+
+                    self.document = fresh
+                    // 边缘 session / token 写在重定向后的地址上，跟着清单刷新走
+                    let manifest = response.finalURL ?? self.manifestURL
+                    self.manifestURL = manifest
+                    self.videoStream?.updateBaseURL(manifest: manifest, doc: fresh, period: freshPeriod)
+                    self.audioStream?.updateBaseURL(manifest: manifest, doc: fresh, period: freshPeriod)
+                    self.refreshWindow(doc: fresh, period: freshPeriod, initial: false)
+                    self.prefetchLatest()
                 } catch {
                     // 直播刷新失败不致命，下一轮再试
                 }

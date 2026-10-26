@@ -12,10 +12,10 @@ final class DASHStream {
     let representation: MPDRepresentation
     let adaptation: MPDAdaptation
     let period: MPDPeriod
-    let template: MPDSegmentTemplate?
+    var template: MPDSegmentTemplate?
     let segmentList: MPDSegmentList?
     let initURL: URL?
-    let baseURL: URL
+    var baseURL: URL
 
     init(kind: Kind,
          representation: MPDRepresentation,
@@ -201,6 +201,53 @@ final class DASHStream {
             }
         }
         return out
+    }
+
+    // MARK: - 直播刷新
+
+    /// 直播清单刷新后同步 SegmentTemplate。
+    ///
+    /// SegmentTimeline 型直播的时间线 `t` 是绝对时间戳，服务端每次刷新都会整体前移；
+    /// 若一直使用起播那帧的时间线，可播窗口的尽头会停在起播时刻，
+    /// 播完 `keep` 个分片后就再没有新分片可用（表现为“播几十秒就停”）。
+    /// 因此每次刷新都要按 Representation id 匹配，把最新的 media / timescale / timeline 等覆盖过来。
+    ///
+    /// - Parameter doc: 本次重新拉取并解析得到的 MPD。
+    func syncTemplate(from doc: MPDDocument) {
+        guard let freshPeriod = doc.periods.first else { return }
+        for adaptation in freshPeriod.adaptations {
+            for rep in adaptation.representations where rep.id == representation.id {
+                let source = rep.segmentTemplate ?? adaptation.segmentTemplate
+                guard let fresh = source else { continue }
+                let merged = MPDSegmentTemplate()
+                merged.media = fresh.media ?? template?.media
+                merged.initialization = fresh.initialization ?? template?.initialization
+                merged.timescale = fresh.timescale > 0 ? fresh.timescale : (template?.timescale ?? 1)
+                merged.startNumber = fresh.startNumber > 0 ? fresh.startNumber : (template?.startNumber ?? 1)
+                merged.duration = fresh.duration ?? template?.duration
+                merged.pto = fresh.pto
+                merged.timeline = fresh.timeline
+                template = merged
+            }
+        }
+    }
+
+    /// 用本次清单的最终地址重解分片基址。
+    ///
+    /// 边缘节点常把 session / token 写在重定向后的 URL 上（清单里的 BaseURL 仍是相对路径），
+    /// 每次刷新拿到的最终地址可能带着新的 token；不刷新基址会让新分片沿用过期 token 而拉不动。
+    ///
+    /// - Parameters:
+    ///   - manifest: 本次清单的最终 URL。
+    ///   - doc: 本次解析得到的 MPD。
+    ///   - period: doc 里对应的 Period。
+    func updateBaseURL(manifest: URL, doc: MPDDocument, period: MPDPeriod) {
+        var base = manifest
+        for component in [doc.baseURL, period.baseURL, adaptation.baseURL, representation.baseURL] {
+            guard let text = component, !text.isEmpty else { continue }
+            if let url = URL(string: text, relativeTo: base) { base = url.absoluteURL }
+        }
+        baseURL = base
     }
 
     // MARK: - URL 模板
