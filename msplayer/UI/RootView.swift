@@ -199,6 +199,11 @@ struct RootView: View {
         // 时移控制器只被主线程驱动：进度推进即换算成时移时间，拿到时长才说明流内可以 seek
         .onReceive(player.$currentTime) { time in timeShift.syncCurrentTime(time) }
         .onReceive(player.$duration) { value in timeShift.syncDuration(value) }
+        // 播放时禁止系统自动锁屏/休眠；暂停或退出播放后恢复，避免看片途中黑屏。
+        .onReceive(player.$isPlaying) { playing in
+            UIApplication.shared.isIdleTimerDisabled = playing
+        }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .onChange(of: activeLineChannel?.id) { _ in triggerEPG() }
         .onChange(of: store.selectedSourceID) { _ in
             if currentGroup == nil || !store.currentGroups.contains(where: { $0.name == currentGroup?.name }) {

@@ -472,16 +472,6 @@ private struct TimeShiftStepZone: View {
                                      startPoint: direction < 0 ? .leading : .trailing,
                                      endPoint: direction < 0 ? .trailing : .leading))
                 .opacity(accelerating ? 0.18 : 0)
-
-            VStack(spacing: 6) {
-                Image(systemName: direction < 0 ? "backward.fill" : "forward.fill")
-                    .font(.system(size: 26, weight: .bold))
-                Text(direction < 0 ? "后退" : "前进")
-                    .font(.system(size: 12, weight: .bold))
-                Text("\(Int(TimeShiftController.stepSeconds))s")
-                    .font(.system(size: 11, design: .monospaced))
-            }
-            .foregroundColor(.white.opacity(accelerating ? 0.95 : 0.24))
         }
         .contentShape(Rectangle())
         .gesture(pressGesture)
