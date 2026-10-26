@@ -167,7 +167,9 @@ final class PlayerController: NSObject, ObservableObject {
 
     /// asset 那个关键属性没加载完时必须异步等一下再放行，保证后面的操作都在主线程执行
     private static func onSelectionReady(_ asset: AVAsset, run: @escaping @MainActor () -> Void) {
-        if asset.statusOfValue(forKey: selectionKey) == .loaded {
+        // 注意：AVAsset 这两个 API 的 error 参数没有默认值，必须自己传一个
+        var ignored: NSError?
+        if asset.statusOfValue(forKey: selectionKey, error: &ignored) == .loaded {
             Task { @MainActor in run() }
             return
         }
