@@ -33,6 +33,7 @@ struct RootView: View {
 
     @EnvironmentObject private var store: Store
     @StateObject private var player = PlayerController()
+    @StateObject private var timeShift = TimeShiftController()
 
     @AppStorage("msplayer.lastChannel") private var lastChannelName = ""
 
@@ -72,6 +73,8 @@ struct RootView: View {
                     .simultaneousGesture(swipeGesture)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 时移界面接管了点击与划动，底层手势必须让位，否则一次操作会被响应两次
+            .allowsHitTesting(!timeShift.isActive)
 
             HStack(spacing: 0) {
                 if visiblePanel == .left {
@@ -117,7 +120,8 @@ struct RootView: View {
 
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                if store.settings.showBottomBar {
+                // 时移界面自带进度条与控制条，底栏让位，避免两条进度条打架
+                if store.settings.showBottomBar && !timeShift.isActive {
                     if bottomBarVisible {
                         BottomBar(
                             index: currentIndex,
@@ -129,7 +133,9 @@ struct RootView: View {
                             onSelectLine: { activeSheet = .lines },
                             onTogglePlay: { player.toggle(); revealBottomBar() },
                             onSeek: { player.seek(to: $0); revealBottomBar() },
-                            onShowDiagnostics: { activeSheet = .about }
+                            onShowDiagnostics: { activeSheet = .about },
+                            supportsTimeShift: supportsCatchUp,
+                            onEnterTimeShift: { enterTimeShift() }
                         )
                         .onTapGesture { revealBottomBar() }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -142,6 +148,21 @@ struct RootView: View {
                             .transition(.opacity)
                     }
                 }
+            }
+
+            if timeShift.isActive {
+                TimeShiftOverlay(
+                    controller: timeShift,
+                    channelName: currentGroup?.name ?? player.currentChannel?.name ?? "未选择频道",
+                    activeGroup: currentGroup,
+                    onExit: { timeShift.exitToLive() },
+                    onPlayPause: { player.toggle() },
+                    onSelectGroup: { group in
+                        timeShift.deactivate()
+                        play(group: group, line: 0)
+                    }
+                )
+                .transition(.opacity)
             }
 
             if let banner = errorBanner {
@@ -170,6 +191,9 @@ struct RootView: View {
             }
         }
         .onReceive(ticker) { now = $0 }
+        // 时移控制器只被主线程驱动：进度推进即换算成时移时间，拿到时长才说明流内可以 seek
+        .onReceive(player.$currentTime) { time in timeShift.syncCurrentTime(time) }
+        .onReceive(player.$duration) { value in timeShift.syncDuration(value) }
         .onChange(of: activeLineChannel?.id) { _ in triggerEPG() }
         .onChange(of: store.selectedSourceID) { _ in
             if currentGroup == nil || !store.currentGroups.contains(where: { $0.name == currentGroup?.name }) {
@@ -303,6 +327,7 @@ struct RootView: View {
         startedOnce = true
 
         player.aspect = store.settings.aspect
+        timeShift.attach(player)
 
         player.onPlaybackStarted = {
             scheduleAutoHide()
@@ -328,6 +353,8 @@ struct RootView: View {
         lineIndex = safeLine
         lastChannelName = group.name
         catchUpProgram = nil
+        // 切台一律退出时移：新的频道要重新判断能力，旧的时移状态不能带过去
+        timeShift.deactivate()
 
         let source = group.lines[safeLine]
         var playback = source
@@ -348,7 +375,14 @@ struct RootView: View {
         let horizontal = abs(translation.width) > abs(translation.height)
         if horizontal {
             if supportsCatchUp {
-                timeshift(by: translation.width > 0 ? 30 : -30)
+                // 时移界面打开后由它自己接管划动；这里只负责把它叫出来
+                if timeShift.isActive {
+                    timeShift.step(by: translation.width > 0
+                                   ? TimeShiftController.stepSeconds
+                                   : -TimeShiftController.stepSeconds)
+                } else {
+                    enterTimeShift()
+                }
             } else {
                 switchLine(step: translation.width > 0 ? 1 : -1)
             }
@@ -377,13 +411,21 @@ struct RootView: View {
         play(group: group, line: next)
     }
 
-    /// 支持回看的频道：左右滑动做时移。
-    private func timeshift(by seconds: Double) {
-        guard player.duration > 0 else {
-            showBanner("当前为直播，先在「节目单」点选回看节目后再左右滑动时移")
+    /// 进入时移：以「实时 − 4 秒」为起点拉一段时移流。
+    /// 当前线路不支持时，自动切到同频道里支持回看的那条线路。
+    private func enterTimeShift() {
+        guard let group = currentGroup,
+              let line = catchUpLine(in: group),
+              group.lines.indices.contains(line) else {
+            showBanner("该频道不支持时移")
             return
         }
-        player.skip(by: seconds)
+        currentGroup = group
+        lineIndex = line
+        lastChannelName = group.name
+        catchUpProgram = nil
+        visiblePanel = nil
+        timeShift.enter(channel: group.lines[line], lineIndex: line)
     }
 
     /// 从节目单点选节目：用节目起止时间替换 playseek 模板后播放。
@@ -416,6 +458,8 @@ struct RootView: View {
         lineIndex = line
         lastChannelName = group.name
         catchUpProgram = nil
+        // 节目单回看是另一条路径（按节目起止时间取流），与时移互斥
+        timeShift.deactivate()
 
         player.aspect = store.settings.aspect
         player.open(channel: playback, lineIndex: line)

@@ -13,6 +13,10 @@ struct BottomBar: View {
     let onTogglePlay: () -> Void
     let onSeek: (Double) -> Void
     let onShowDiagnostics: () -> Void
+    /// 当前频道是否支持时移 / 回看。
+    let supportsTimeShift: Bool
+    /// 进入时移界面（左右划动同效）。
+    let onEnterTimeShift: () -> Void
 
     @State private var dragging = false
     @State private var dragValue: Double = 0
@@ -66,6 +70,13 @@ struct BottomBar: View {
 
             if let format = channel?.formatLabel {
                 badge(format, color: .white.opacity(0.55))
+            }
+
+            if supportsTimeShift {
+                Button(action: onEnterTimeShift) {
+                    badge("可时移", color: .cyan)
+                }
+                .buttonStyle(.plain)
             }
 
             if player.isPreparing {

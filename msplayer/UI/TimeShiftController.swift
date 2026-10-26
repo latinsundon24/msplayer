@@ -1,0 +1,306 @@
+import Foundation
+import Combine
+import SwiftUI
+
+/// 直播时移控制器。
+///
+/// 时移复用回看那套 `playseek=开始-结束`：进入时向源站请求一段「过去某刻 → 实时」的流，
+/// 这段流有固定时长，之后的左右步进直接在流内 seek，不再重新拉流，所以拖动手感和本地拖动一样。
+///
+/// 少数源对 playseek 返回的是「从起点一直播下去」的直播式响应（没有时长、无法 seek），
+/// 这时自动退化成 `mode == .reload`：每次步进重新取一段流，功能仍在，只是每次要等一次起播。
+@MainActor
+final class TimeShiftController: ObservableObject {
+
+    enum Status: Equatable {
+        case idle
+        case loading
+        case ready
+        case failed(String)
+    }
+
+    enum Mode: Equatable {
+        case seek    // 流内有时长，直接 seek
+        case reload  // 每次步进重新取流
+    }
+
+    /// 刚进入时移时，时移时间比实时往回退的秒数。
+    static let entryDelay: TimeInterval = 4
+    /// 单次步进秒数。
+    static let stepSeconds: TimeInterval = 10
+    /// 可选倍速。
+    static let rateOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
+
+    /// 时移窗口保留的历史长度。
+    private static let historyWindow: TimeInterval = 30 * 60
+    /// 重新取流时向后保留的余量。
+    private static let forwardMargin: TimeInterval = 15 * 60
+    /// 起播等待上限。
+    private static let loadTimeout: UInt64 = 25_000_000_000
+
+    // MARK: - 对外状态
+
+    @Published private(set) var status: Status = .idle
+    @Published private(set) var isActive = false
+    @Published private(set) var windowStart = Date()
+    @Published private(set) var windowEnd = Date()
+    @Published private(set) var shiftDate = Date()
+    @Published private(set) var liveDate = Date()
+    @Published private(set) var rate: Float = 1
+    @Published private(set) var mode: Mode = .seek
+    @Published var notice: String?
+
+    var isReady: Bool { status == .ready }
+
+    private var player: PlayerController?
+    private var channel: Channel?
+    private var lineIndex: Int = 0
+    private var pendingSeek: Date?
+    private var reloadTask: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
+
+    func attach(_ player: PlayerController) {
+        self.player = player
+    }
+
+    // MARK: - 进入 / 退出
+
+    /// 进入时移：以「实时 - entryDelay」为起点拉一段时移流。
+    func enter(channel: Channel, lineIndex: Int) {
+        let now = Date()
+        liveDate = now
+        let anchor = now.addingTimeInterval(-Self.entryDelay)
+        reload(channel: channel,
+               lineIndex: lineIndex,
+               from: anchor.addingTimeInterval(-Self.historyWindow),
+               to: now,
+               seekTo: anchor)
+    }
+
+    /// 重试（起播失败时用）。
+    func retry() {
+        guard let channel else {
+            notice = "无法重试：频道信息已丢失"
+            return
+        }
+        enter(channel: channel, lineIndex: lineIndex)
+    }
+
+    /// 回到直播：清掉时移状态并重新拉实时流。
+    func exitToLive() {
+        guard let channel = self.channel, let player = self.player else {
+            deactivate()
+            return
+        }
+        var live = channel
+        live.url = CatchUp.liveURL(for: channel)
+        let savedLine = lineIndex
+        deactivate()
+        player.setRate(1)
+        player.open(channel: live, lineIndex: savedLine)
+    }
+
+    /// 切台 / 换源：只清状态，播放由外部接管（外部会自己 open）。
+    func deactivate() {
+        reloadTask?.cancel()
+        reloadTask = nil
+        watchdog?.cancel()
+        watchdog = nil
+        pendingSeek = nil
+        channel = nil
+        // 倍速是时移界面的功能，退出时一并恢复，别带到下一个频道
+        player?.setRate(1)
+        status = .idle
+        isActive = false
+        notice = nil
+        rate = 1
+    }
+
+    // MARK: - 时移操作
+
+    /// 相对当前时移点步进；正数往实时方向，负数往过去。
+    func step(by seconds: TimeInterval) {
+        guard status == .ready else { return }
+        seek(to: shiftDate.addingTimeInterval(seconds))
+    }
+
+    /// 跳到绝对时间点。
+    func seek(to target: Date) {
+        guard status == .ready else { return }
+        let now = Date()
+        liveDate = now
+        // 时移不能越过实时
+        let clamped = min(target, now.addingTimeInterval(-1))
+        notice = nil
+
+        if mode == .seek {
+            seekWithinStream(to: clamped, now: now)
+        } else {
+            shiftDate = clamped
+            scheduleReload()
+        }
+    }
+
+    private func seekWithinStream(to target: Date, now: Date) {
+        guard let player else { return }
+        let duration = player.duration
+        var clamped = target
+        var position = clamped.timeIntervalSince(windowStart)
+
+        // 顶到窗口头部：取一段更早的流
+        if position < 1 {
+            reanchor(to: clamped)
+            return
+        }
+
+        // 顶到窗口尾部：窗口末尾就是实时时夹住，否则取一段更靠后的流
+        if duration > 0, position > duration - 2 {
+            if clamped >= now.addingTimeInterval(-2) {
+                clamped = windowEnd.addingTimeInterval(-1)
+                position = clamped.timeIntervalSince(windowStart)
+                notice = "已到实时画面"
+            } else {
+                reanchor(to: clamped)
+                return
+            }
+        }
+
+        player.seek(to: max(0, position))
+        shiftDate = clamped
+    }
+
+    func setRate(_ value: Float) {
+        rate = value
+        player?.setRate(value)
+    }
+
+    func updateLiveDate() {
+        liveDate = Date()
+    }
+
+    // MARK: - 取流
+
+    private func reload(channel: Channel, lineIndex: Int,
+                        from: Date, to: Date, seekTo: Date) {
+        guard let player, let url = CatchUp.url(for: channel, from: from, to: to) else {
+            status = .failed("该频道不支持时移")
+            isActive = true
+            return
+        }
+        self.channel = channel
+        self.lineIndex = lineIndex
+        self.windowStart = from
+        self.windowEnd = to
+        self.pendingSeek = seekTo
+        self.shiftDate = seekTo
+        self.notice = nil
+        self.status = .loading
+        self.isActive = true
+
+        reloadTask?.cancel()
+        reloadTask = nil
+
+        var playback = channel
+        playback.url = url
+        player.setRate(rate)
+        player.open(channel: playback, lineIndex: lineIndex)
+        armWatchdog()
+    }
+
+    /// 目标时间落在窗口外时，重新取一段以它为中心的流。
+    private func reanchor(to target: Date) {
+        guard let channel else { return }
+        let now = Date()
+        let start = target.addingTimeInterval(-Self.historyWindow)
+        let end = min(target.addingTimeInterval(Self.forwardMargin), now)
+        guard end.timeIntervalSince(start) > 120 else { return }
+        reload(channel: channel, lineIndex: lineIndex, from: start, to: end, seekTo: target)
+    }
+
+    /// 无法在流内 seek 时，防抖后重新取一段流。
+    private func scheduleReload() {
+        reloadTask?.cancel()
+        let target = shiftDate
+        reloadTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            guard let channel = self.channel else { return }
+            self.reload(channel: channel,
+                        lineIndex: self.lineIndex,
+                        from: target,
+                        to: Date(),
+                        seekTo: target)
+        }
+    }
+
+    private func armWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.loadTimeout)
+            guard !Task.isCancelled else { return }
+            if self.status == .loading {
+                self.status = .failed("时移流加载超时")
+            }
+        }
+    }
+
+    // MARK: - 播放器状态同步（由界面在主线程驱动）
+
+    func syncDuration(_ duration: Double) {
+        guard status == .loading, duration > 0 else { return }
+        mode = .seek
+        status = .ready
+        watchdog?.cancel()
+        watchdog = nil
+        applyPendingSeek()
+    }
+
+    func syncCurrentTime(_ time: Double) {
+        guard status != .idle else { return }
+
+        if status == .loading {
+            // 已经在出画面但始终拿不到时长：按「每次重取」模式用
+            if time > 1, (player?.duration ?? 0) <= 0 {
+                mode = .reload
+                status = .ready
+                pendingSeek = nil
+                watchdog?.cancel()
+                watchdog = nil
+                shiftDate = windowStart
+            }
+            return
+        }
+
+        guard status == .ready else { return }
+
+        // 时长刚出现的那一帧，播放器的 isLive 还没翻成 false，seek 会被挡回来；
+        // 这里补一次，把落下的那次定位补上（最迟 0.5 秒后生效）。
+        if pendingSeek != nil, player?.isLive == false {
+            applyPendingSeek()
+            return
+        }
+
+        guard mode == .seek else { return }
+        shiftDate = windowStart.addingTimeInterval(time)
+
+        // 播到窗口末尾就等于追上了实时：画面会停下，得告诉用户为什么
+        let duration = player?.duration ?? 0
+        if duration > 0, time >= duration - 1, notice != Self.reachedLiveNotice {
+            notice = Self.reachedLiveNotice
+        }
+    }
+
+    private static let reachedLiveNotice = "已追上实时，点「回直播」继续看直播"
+
+    private func applyPendingSeek() {
+        guard let player, let target = pendingSeek else { return }
+        // isLive 为真时 PlayerController.seek 会直接返回，这里先别把 pending 清掉，
+        // 否则这次定位就丢了，画面会停在时移流的开头。
+        guard !player.isLive else { return }
+        pendingSeek = nil
+        let position = target.timeIntervalSince(windowStart)
+        let clamped = min(max(position, 0), max(0, player.duration - 1))
+        player.seek(to: clamped)
+        shiftDate = target
+    }
+}
