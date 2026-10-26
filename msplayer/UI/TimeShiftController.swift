@@ -49,8 +49,27 @@ final class TimeShiftController: ObservableObject {
     @Published private(set) var rate: Float = 1
     @Published private(set) var mode: Mode = .seek
     @Published var notice: String?
+    /// 时移底栏是否显示；任意交互后重新计时，5 秒无操作自动隐藏。
+    @Published var barVisible = true
+    private var barHideTask: Task<Void, Never>?
 
     var isReady: Bool { status == .ready }
+
+    /// 显示时移底栏并重置自动隐藏计时（任意交互时调用）。
+    func revealBar() {
+        barVisible = true
+        scheduleBarHide()
+    }
+
+    /// 5 秒后自动隐藏时移底栏。
+    func scheduleBarHide() {
+        barHideTask?.cancel()
+        barHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            barVisible = false
+        }
+    }
 
     private var player: PlayerController?
     private var channel: Channel?
@@ -108,6 +127,9 @@ final class TimeShiftController: ObservableObject {
         watchdog = nil
         pendingSeek = nil
         channel = nil
+        barHideTask?.cancel()
+        barHideTask = nil
+        barVisible = true
         // 倍速是时移界面的功能，退出时一并恢复，别带到下一个频道
         player?.setRate(1)
         status = .idle
@@ -196,6 +218,8 @@ final class TimeShiftController: ObservableObject {
         self.notice = nil
         self.status = .loading
         self.isActive = true
+        barVisible = true
+        scheduleBarHide()
 
         reloadTask?.cancel()
         reloadTask = nil

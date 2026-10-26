@@ -22,6 +22,11 @@ struct TimeShiftOverlay: View {
     let onExit: () -> Void
     let onPlayPause: () -> Void
     let onSelectGroup: (ChannelGroup) -> Void
+    /// 隐藏底栏时，用与直播相同的设定唤出左 / 右栏。
+    let onToggleLeft: () -> Void
+    let onToggleRight: () -> Void
+    /// 左右栏是否已打开：打开时整个时移层让位，由底层侧栏点击区负责开 / 关，避免抢手势。
+    let panelsOpen: Bool
 
     @State private var showList = false
     @State private var search = ""
@@ -45,30 +50,65 @@ struct TimeShiftOverlay: View {
             Color.black.opacity(0.22)
                 .ignoresSafeArea()
 
-            // 手势层：左热区 / 中间播放暂停 / 右热区
+            // 手势层：左热区 / 中间播放暂停 / 右热区（底栏隐藏或左右栏打开时让位）
             HStack(spacing: 0) {
                 TimeShiftStepZone(direction: -1, controller: controller)
-                    .frame(width: 132)
+                    .frame(width: 106)
                 centerZone
                 TimeShiftStepZone(direction: 1, controller: controller)
-                    .frame(width: 132)
+                    .frame(width: 106)
             }
             .ignoresSafeArea()
+            .allowsHitTesting(controller.barVisible && !panelsOpen)
 
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                infoBlock
-                    .frame(maxWidth: 760)
+                GeometryReader { geo in
+                    infoBlock
+                        .frame(width: max(min(geo.size.width * 0.6, 760), 300))
+                }
+                .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 14)
+            .opacity(controller.barVisible ? 1 : 0)
+            .allowsHitTesting(controller.barVisible && !panelsOpen)
+            .animation(.easeInOut(duration: 0.25), value: controller.barVisible)
 
             if showList {
                 listPanel
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
+
+            // 底栏隐藏且左右栏未打开：屏幕退化成直播式交互——左 / 右侧开栏，其余处显栏。
+            if !controller.barVisible && !panelsOpen {
+                hiddenTapLayer
+            }
         }
         .onReceive(ticker) { _ in controller.updateLiveDate() }
+        .onAppear { controller.revealBar() }
+    }
+
+    /// 底栏隐藏时的透明可触击层：按落点位置决定开左栏 / 开右栏 / 显示底栏。
+    private var hiddenTapLayer: some View {
+        GeometryReader { geo in
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onEnded { value in
+                            let ratio = geo.size.width > 0 ? value.location.x / geo.size.width : 0.5
+                            if ratio < 0.34 {
+                                onToggleLeft()
+                            } else if ratio > 0.66 {
+                                onToggleRight()
+                            } else {
+                                controller.revealBar()
+                            }
+                        }
+                )
+        }
     }
 
     // MARK: - 中间区域
@@ -76,11 +116,15 @@ struct TimeShiftOverlay: View {
     private var centerZone: some View {
         Color.clear
             .contentShape(Rectangle())
-            .onTapGesture { onPlayPause() }
+            .onTapGesture {
+                controller.revealBar()
+                onPlayPause()
+            }
             .gesture(
                 DragGesture(minimumDistance: 26)
                     .onEnded { value in
                         guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        controller.revealBar()
                         let seconds: TimeInterval = value.translation.width > 0
                             ? TimeShiftController.stepSeconds
                             : -TimeShiftController.stepSeconds
@@ -92,13 +136,14 @@ struct TimeShiftOverlay: View {
     // MARK: - 信息块
 
     private var infoBlock: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             topRow
             progressBar
             bottomRow
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.black.opacity(0.62))
@@ -119,14 +164,19 @@ struct TimeShiftOverlay: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 3) {
-                Text("时移 \(clockText(controller.shiftDate))")
-                    .font(.system(size: 16, weight: .bold, design: .monospaced))
-                    .foregroundColor(.cyan)
-                    .lineLimit(1)
-                Text("实时 \(clockText(controller.liveDate))")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.6))
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(clockText(controller.shiftDate))
+                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan)
+                        .lineLimit(1)
+                    Text("/")
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.45))
+                    Text(clockText(controller.liveDate))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
 
                 HStack(spacing: 8) {
                     if let notice = controller.notice, !notice.isEmpty {
@@ -209,10 +259,12 @@ struct TimeShiftOverlay: View {
                     .onChanged { value in
                         dragging = true
                         dragRatio = Self.ratio(at: value.location.x, width: geo.size.width)
+                        controller.revealBar()
                     }
                     .onEnded { value in
                         let ratio = Self.ratio(at: value.location.x, width: geo.size.width)
                         dragging = false
+                        controller.revealBar()
                         controller.seek(to: controller.windowStart.addingTimeInterval(total * ratio))
                     }
             )
@@ -243,7 +295,10 @@ struct TimeShiftOverlay: View {
 
             rateMenu
 
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { showList.toggle() } }) {
+            Button(action: {
+                controller.revealBar()
+                withAnimation(.easeInOut(duration: 0.2)) { showList.toggle() }
+            }) {
                 HStack(spacing: 5) {
                     Image(systemName: "list.bullet")
                         .font(.system(size: 11, weight: .bold))
@@ -464,6 +519,8 @@ private struct TimeShiftStepZone: View {
 
     private func beginPress() {
         guard pressTask == nil else { return }
+        // 任意交互都重置底栏自动隐藏计时
+        controller.revealBar()
         // 按下立即给一次反馈，别等 0.4 秒才有反应
         controller.step(by: Double(direction) * TimeShiftController.stepSeconds)
 

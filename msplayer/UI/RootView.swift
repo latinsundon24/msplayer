@@ -73,50 +73,9 @@ struct RootView: View {
                     .simultaneousGesture(swipeGesture)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // 时移界面接管了点击与划动，底层手势必须让位，否则一次操作会被响应两次
-            .allowsHitTesting(!timeShift.isActive)
-
-            HStack(spacing: 0) {
-                if visiblePanel == .left {
-                    LeftPanel(
-                        selectedTab: $selectedTab,
-                        currentGroup: currentGroup,
-                        channel: activeLineChannel ?? player.currentChannel ?? currentGroup?.primary,
-                        now: now,
-                        onSelectSource: { source in
-                            store.select(source)
-                            currentGroup = store.currentGroups.first
-                            lineIndex = 0
-                            if let group = currentGroup { play(group: group, line: 0) }
-                        },
-                        onSelectGroup: { group in
-                            play(group: group, line: 0)
-                        },
-                        onSelectProgram: { program in
-                            playCatchUp(program)
-                        },
-                        onCatchUpFrom: { start in
-                            playCatchUp(from: start, to: Date())
-                        },
-                        onInteraction: {
-                            notePanelInteraction()
-                        }
-                    )
-                    .frame(width: 300)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-                }
-
-                Spacer(minLength: 0)
-
-                if visiblePanel == .right {
-                    RightPanel(
-                        onSelect: { sheet in activeSheet = sheet },
-                        onExit: { showExitConfirm = true }
-                    )
-                    .frame(width: 200)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
-            }
+            // 时移界面底栏可见时会接管点击与划动；底栏隐藏或左右栏打开时整层让位，
+            // 此时由底层侧栏点击区负责开 / 关左右栏（与直播相同的设定）。
+            .allowsHitTesting(true)
 
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
@@ -160,9 +119,55 @@ struct RootView: View {
                     onSelectGroup: { group in
                         timeShift.deactivate()
                         play(group: group, line: 0)
-                    }
+                    },
+                    onToggleLeft: { toggleLeft() },
+                    onToggleRight: { toggleRight() },
+                    panelsOpen: visiblePanel != nil
                 )
                 .transition(.opacity)
+            }
+
+            // 左右栏放在时移界面之上，底栏隐藏时仍可点击操作（与直播相同的自动隐藏设定）。
+            HStack(spacing: 0) {
+                if visiblePanel == .left {
+                    LeftPanel(
+                        selectedTab: $selectedTab,
+                        currentGroup: currentGroup,
+                        channel: activeLineChannel ?? player.currentChannel ?? currentGroup?.primary,
+                        now: now,
+                        onSelectSource: { source in
+                            store.select(source)
+                            currentGroup = store.currentGroups.first
+                            lineIndex = 0
+                            if let group = currentGroup { play(group: group, line: 0) }
+                        },
+                        onSelectGroup: { group in
+                            play(group: group, line: 0)
+                        },
+                        onSelectProgram: { program in
+                            playCatchUp(program)
+                        },
+                        onCatchUpFrom: { start in
+                            playCatchUp(from: start, to: Date())
+                        },
+                        onInteraction: {
+                            notePanelInteraction()
+                        }
+                    )
+                    .frame(width: 300)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+
+                Spacer(minLength: 0)
+
+                if visiblePanel == .right {
+                    RightPanel(
+                        onSelect: { sheet in activeSheet = sheet },
+                        onExit: { showExitConfirm = true }
+                    )
+                    .frame(width: 200)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
 
             if let banner = errorBanner {
