@@ -185,16 +185,32 @@ struct LeftPanel: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.08)))
             .padding(.horizontal, 10)
 
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(Array(filteredGroups.enumerated()), id: \.element.id) { offset, group in
-                        channelRow(group: group, index: offset + 1)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(Array(filteredGroups.enumerated()), id: \.element.id) { offset, group in
+                            channelRow(group: group, index: offset + 1)
+                                .id(group.id)
+                        }
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 8)
+                    .background(ScrollActivityObserver { onInteraction() })
                 }
-                .padding(.horizontal, 6)
-                .padding(.bottom, 8)
-                .background(ScrollActivityObserver { onInteraction() })
+                // 左栏（重新）出现或当前台变化时，直接滚到当前播放频道，
+                // 不再每次都从顶部开始、还要手动往下找。
+                .onAppear { scrollToCurrentGroup(proxy) }
+                .onChange(of: currentGroup?.name) { _ in scrollToCurrentGroup(proxy) }
             }
+        }
+    }
+
+    /// 把频道列表滚到「当前播放的频道」位置。搜索过滤掉当前台时则不动（避免无谓滚动）。
+    private func scrollToCurrentGroup(_ proxy: ScrollViewProxy) {
+        guard let current = currentGroup,
+              filteredGroups.contains(where: { $0.id == current.id }) else { return }
+        DispatchQueue.main.async {
+            withAnimation { proxy.scrollTo(current.id, anchor: .center) }
         }
     }
 
