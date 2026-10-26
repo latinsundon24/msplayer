@@ -20,7 +20,11 @@ enum TTMLSubtitle {
     ///   - duration: 该分片时长（秒）；越界的字幕会被收敛进分片区间。
     /// - Returns: WebVTT 文本。取不到 `mdat` 时返回 nil；
     ///   解析失败或该片无字幕时返回**合法的空 WebVTT**，避免播放列表被判为损坏。
-    static func webVTT(from segment: Data, startTime: Double, duration: Double) -> String? {
+    /// - Parameters:
+    ///   - mpegts: 本分片起点在 HLS 程序时间轴上的 90kHz 值。Apple 的 HLS 规范要求
+    ///     每个供 AVPlayer 使用的 WebVTT 分片都必须带 `X-TIMESTAMP-MAP` 头，
+    ///     缺了字幕会不同步甚至不显示。
+    static func webVTT(from segment: Data, startTime: Double, duration: Double, mpegts: Int64 = 0) -> String? {
         guard let payload = Box.parse(segment).first(where: { $0.type == "mdat" })?.payload,
               !payload.isEmpty else { return nil }
 
@@ -31,7 +35,9 @@ enum TTMLSubtitle {
         parser.shouldResolveExternalEntities = false
         parser.parse()
 
-        var text = "WEBVTT\n\n"
+        // cue 时间是相对分片起点的（LOCAL 00:00:00.000），映射到程序时间轴的 MPEGTS
+        var text = "WEBVTT\n"
+        text += "X-TIMESTAMP-MAP:LOCAL:00:00:00.000,MPEGTS:\(max(0, mpegts))\n\n"
         for cue in collector.cues {
             text += "\(timestamp(cue.begin)) --> \(timestamp(cue.end))\n"
             text += cue.text + "\n\n"

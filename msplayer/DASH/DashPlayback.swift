@@ -547,6 +547,18 @@ final class DashPlayback {
             return (200, "application/vnd.apple.mpegurl", Data(masterPlaylist().utf8))
         }
 
+        // 「关闭字幕」的空轨：一个 VOD 的 WebVTT 播放列表 + 一个没有 cue 的 vtt 文件。
+        // RFC 8216 要求 SUBTITLES rendition 必须带 URI，所以关闭项也必须是一条真实存在的轨。
+        if name == "off.m3u8" {
+            let vod = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:8\n"
+                + "#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+                + "#EXTINF:8.000,\noff.vtt\n#EXT-X-ENDLIST\n"
+            return (200, "application/vnd.apple.mpegurl", Data(vod.utf8))
+        }
+        if name == "off.vtt" {
+            return (200, "text/vtt", Data("WEBVTT\n".utf8))
+        }
+
         for track in everyTrack {
             if name == track.playlistName {
                 return (200, "application/vnd.apple.mpegurl", Data(mediaPlaylist(track: track).utf8))
@@ -558,6 +570,18 @@ final class DashPlayback {
         }
 
         return serveSegment(name: name)
+    }
+
+    /// 该分片在 HLS 程序时间轴上的 90kHz 起点（供 WebVTT 的 X-TIMESTAMP-MAP 使用）。
+    /// 播放列表把 window[0] 映射到 MEDIA-SEQUENCE（= dropped），所以分片的程序位置
+    /// 就是 (dropped + 窗口内序号) × 分片时长。
+    private func subtitleMPEGTS(track: Track, segment: DASHStream.Segment) -> Int64 {
+        lock.lock()
+        let index = track.window.firstIndex { $0.time == segment.time } ?? 0
+        let dropped = track.dropped
+        lock.unlock()
+        let seconds = Double(dropped + index) * max(0.001, segment.duration)
+        return Int64((seconds * 90000).rounded())
     }
 
     private func lookupSegment(_ name: String) -> (Track, DASHStream.Segment)? {
@@ -582,7 +606,8 @@ final class DashPlayback {
             guard let raw = syncFetch(segment.url, attempts: 2),
                   let text = TTMLSubtitle.webVTT(from: raw,
                                                  startTime: segment.time,
-                                                 duration: segment.duration),
+                                                 duration: segment.duration,
+                                                 mpegts: subtitleMPEGTS(track: track, segment: segment)),
                   let data = text.data(using: .utf8) else {
                 return (503, "text/plain", Data())
             }
@@ -621,9 +646,11 @@ final class DashPlayback {
             }
         }
         if !subtitleTracks.isEmpty {
-            // 不带 URI 的 rendition 代表「关闭字幕」：既让这一组允许空选择，
-            // 也让系统选择界面里出现一个看得见的「关闭」项（否则选了关不掉）。
-            text += "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"sub\",NAME=\"关闭\",DEFAULT=YES,AUTOSELECT=YES\n"
+            // RFC 8216 §4.3.4.2.1：TYPE=SUBTITLES 的 URI 是 REQUIRED —— 无 URI 的标签
+            // 会让 AVPlayer 直接拒掉整份主清单（CoreMediaErrorDomain -12642 Playlist parse error）。
+            // 「关闭字幕」改用一条真实存在的空 WebVTT rendition（off.m3u8 → 空 vtt）表达，
+            // 设为 DEFAULT=YES 让默认状态就是关。
+            text += "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"sub\",NAME=\"关闭\",DEFAULT=YES,AUTOSELECT=YES,URI=\"off.m3u8\"\n"
             for track in subtitleTracks {
                 // 真实的字幕轨一律默认关：避免还没验证过的转换结果一进来就糊在画面上
                 text += mediaTag("SUBTITLES", group: "sub", track: track,
