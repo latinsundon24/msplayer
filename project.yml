@@ -44,7 +44,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.msplayer.app
         PRODUCT_NAME: msplayer
-        MARKETING_VERSION: "1.11"
+        MARKETING_VERSION: "1.12"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_CFBundleDisplayName: msplayer
@@ -83,6 +83,8 @@ targets:
       - path: msplayer/PlaylistParser.swift
       - path: msplayer/Support
       - path: msplayer/EPG
+      - path: msplayer/DASH/CENC.swift
+      - path: msplayer/DASH/MP4Box.swift
       - path: TestsMac
     settings:
       base:

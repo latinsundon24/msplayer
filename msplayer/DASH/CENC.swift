@@ -102,8 +102,8 @@ enum CENC {
 
     // MARK: - AES-CTR（cenc）
 
-    /// 整段一次性 CTR：以 16 字节为块、计数器从 IV 连续推进（不会因明文间隙错位）。
-    /// 再按 subsample 把“明文（clear）”区间还原为原始字节。
+    /// CENC AES-CTR：只对 protected 区间生成密钥流，计数器只随加密字节推进；
+    /// clear 区间原样保留，且不消耗密钥流。
     private static func decryptCTR(sample: inout [UInt8],
                                    start: Int,
                                    size: Int,
@@ -128,41 +128,51 @@ enum CENC {
         guard status == kCCSuccess, let cryptor = cryptor else { throw Failure.crypto }
         defer { CCCryptorRelease(cryptor) }
 
-        // 整段密钥流异或，计数器按 16 字节块连续推进
-        var out = [UInt8](repeating: 0, count: size)
-        var produced = 0
-        sample.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            out.withUnsafeMutableBytes { outRaw in
-                CCCryptorUpdate(cryptor,
-                                base.advanced(by: start),
-                                size,
-                                outRaw.baseAddress,
-                                size,
-                                &produced)
+        // 先复制原始样本，clear 区间保持原样。
+        let input = sample
+        var out = Array(input[start..<(start + size)])
+
+        /// 只把加密区间送进同一个 CTR 上下文：
+        /// CENC 的计数器只随“被加密的字节”推进，subsample 之间的 clear 字节
+        /// 不消耗密钥流。整段连续异或会让 clear 之后的所有数据错位（花屏）。
+        func decryptRange(_ range: Range<Int>) throws {
+            let length = range.count
+            guard length > 0 else { return }
+            var temp = [UInt8](repeating: 0, count: length)
+            var produced = 0
+            let status = input.withUnsafeBytes { raw -> Int32 in
+                guard let base = raw.baseAddress else { return Int32(kCCParamError) }
+                return temp.withUnsafeMutableBytes { outRaw -> Int32 in
+                    CCCryptorUpdate(cryptor,
+                                    base.advanced(by: start + range.lowerBound),
+                                    length,
+                                    outRaw.baseAddress,
+                                    length,
+                                    &produced)
+                }
+            }
+            guard status == kCCSuccess else { throw Failure.crypto }
+            let n = min(produced, length)
+            if n > 0 {
+                out.replaceSubrange(range.lowerBound..<(range.lowerBound + n),
+                                    with: temp[0..<n])
             }
         }
 
         if subsamples.isEmpty {
-            // 整段都是加密样本，结果即 out
-            sample.replaceSubrange(start..<(start + size), with: out)
-            return
-        }
-
-        // 还原明文（clear）区间：用原始字节覆盖密钥流异或后的错误结果
-        var pos = start
-        var outPos = 0
-        for sub in subsamples {
-            let clear = min(sub.clear, size - (pos - start))
-            if clear > 0 {
-                for i in 0..<clear { out[outPos + i] = sample[pos + i] }
+            try decryptRange(0..<size)
+        } else {
+            var cursor = 0
+            for sub in subsamples {
+                cursor += min(sub.clear, size - cursor)
+                if cursor >= size { break }
+                let enc = min(sub.encrypted, size - cursor)
+                if enc > 0 {
+                    try decryptRange(cursor..<(cursor + enc))
+                }
+                cursor += enc
+                if cursor >= size { break }
             }
-            pos += clear
-            outPos += clear
-            let enc = min(sub.encrypted, size - (pos - start))
-            pos += enc
-            outPos += enc
-            if pos >= start + size { break }
         }
         sample.replaceSubrange(start..<(start + size), with: out)
     }

@@ -243,15 +243,32 @@ enum MP4Crypto {
                     continue
                 }
                 var entryBoxes = Box.parse(entryPayload, from: childStart)
+                // 保留原始编码类型（frma）。翡翠台是 hev1，改成 hvc1 会与
+                // MPD / HLS 中的 CODECS=hev1... 不一致，部分解码器会拒绝。
+                let originalType: String? = entryBoxes
+                    .first(where: { $0.type == "sinf" })
+                    .flatMap { $0.child("frma") }
+                    .flatMap { box -> String? in
+                        let b = [UInt8](box.payload)
+                        return b.count >= 4 ? fourCC(b, 0) : nil
+                    }
                 entryBoxes.removeAll { $0.type == "sinf" }
                 let head = entryPayload.prefix(childStart)
                 entryPayload = Data(head) + Box.serialize(entryBoxes)
 
                 let newType: String
                 if type == "encv" {
-                    newType = entryPayload.range(of: fourCCData("hvcC")) != nil ? "hvc1" : "avc1"
+                    if let originalType, ["avc1", "avc3", "hvc1", "hev1"].contains(originalType) {
+                        newType = originalType
+                    } else {
+                        newType = entryPayload.range(of: fourCCData("hvcC")) != nil ? "hvc1" : "avc1"
+                    }
                 } else {
-                    newType = "mp4a"
+                    if let originalType, !originalType.isEmpty, originalType != "enca" {
+                        newType = originalType
+                    } else {
+                        newType = "mp4a"
+                    }
                 }
                 out.append(be32Data(UInt32(entryPayload.count + 8)))
                 out.append(fourCCData(newType))
@@ -471,7 +488,6 @@ enum MP4Fragment {
                 guard b.count >= 8 else { continue }
                 // senc 是 fullbox：version(1) + flags(3) + sample_count(4)
                 let flags = (UInt32(b[1]) << 16) | (UInt32(b[2]) << 8) | UInt32(b[3])
-                let perSampleIV = (flags & 0x01) != 0   // 0x01：每样本携带独立 IV
                 let hasSubsamples = (flags & 0x02) != 0 // 0x02：携带 subsample 描述
                 let count = Int(be32(b, 4))
                 let ivLen = ivSizeOverride ?? defaults.ivSize
@@ -479,7 +495,10 @@ enum MP4Fragment {
                 var crypto: [SampleCrypto] = []
                 for _ in 0..<count {
                     var iv: [UInt8]
-                    if perSampleIV {
+                    // 与 FFmpeg / Bento4 一致：只要 tenc 声明了 per-sample IV 长度，
+                    // senc 里就按该长度读取 IV。部分源（翡翠台 Edgeware）的 senc flags
+                    // 只写了 0x02（subsample），漏了 0x01，但 IV 仍然实际存在。
+                    if ivLen > 0 {
                         guard p + ivLen <= b.count else { break }
                         iv = Array(b[p..<(p + ivLen)])
                         p += ivLen
