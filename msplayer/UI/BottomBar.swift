@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 struct BottomBar: View {
 
@@ -35,12 +36,17 @@ struct BottomBar: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .background(
-            LinearGradient(
-                colors: [Color.black.opacity(0.0), Color.black.opacity(0.82)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black.opacity(0.72))
         )
+        // 直播底栏左右各缩 15%（占屏 70%）居中；大屏封顶 820pt。
+        .frame(width: Self.barWidth)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    /// 直播底栏目标宽度：屏幕宽度的 70%（左右各空 15%），大屏不超过 820pt。
+    private static var barWidth: CGFloat {
+        min(UIScreen.main.bounds.width * 0.7, 820)
     }
 
     // MARK: - 第一行

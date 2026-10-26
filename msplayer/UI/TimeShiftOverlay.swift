@@ -33,7 +33,7 @@ struct TimeShiftOverlay: View {
     @State private var dragging = false
     @State private var dragRatio: Double = 0
 
-    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private static let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var total: TimeInterval {
         max(controller.windowEnd.timeIntervalSince(controller.windowStart), 1)
@@ -84,7 +84,7 @@ struct TimeShiftOverlay: View {
                 hiddenTapLayer
             }
         }
-        .onReceive(ticker) { _ in controller.updateLiveDate() }
+        .onReceive(Self.ticker) { _ in controller.updateLiveDate() }
         .onAppear { controller.revealBar() }
     }
 
