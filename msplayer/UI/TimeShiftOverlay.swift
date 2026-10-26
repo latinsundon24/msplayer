@@ -61,15 +61,14 @@ struct TimeShiftOverlay: View {
             .ignoresSafeArea()
             .allowsHitTesting(controller.barVisible && !panelsOpen)
 
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                GeometryReader { geo in
+            GeometryReader { geo in
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
                     infoBlock
                         .frame(width: max(min(geo.size.width * 0.6, 760), 300))
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
-            .padding(.horizontal, 20)
             .padding(.bottom, 14)
             .opacity(controller.barVisible ? 1 : 0)
             .allowsHitTesting(controller.barVisible && !panelsOpen)
@@ -89,7 +88,8 @@ struct TimeShiftOverlay: View {
         .onAppear { controller.revealBar() }
     }
 
-    /// 底栏隐藏时的透明可触击层：按落点位置决定开左栏 / 开右栏 / 显示底栏。
+    /// 底栏隐藏时的透明可触击层：底部区域（原底栏位置）点一下唤出底栏；
+    /// 上方左右边缘分别开左 / 右栏，上方中间也唤出底栏。
     private var hiddenTapLayer: some View {
         GeometryReader { geo in
             Color.clear
@@ -98,10 +98,13 @@ struct TimeShiftOverlay: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onEnded { value in
-                            let ratio = geo.size.width > 0 ? value.location.x / geo.size.width : 0.5
-                            if ratio < 0.34 {
+                            let x = geo.size.width > 0 ? value.location.x / geo.size.width : 0.5
+                            let y = geo.size.height > 0 ? value.location.y / geo.size.height : 0.5
+                            if y > 0.65 {
+                                controller.revealBar()
+                            } else if x < 0.25 {
                                 onToggleLeft()
-                            } else if ratio > 0.66 {
+                            } else if x > 0.75 {
                                 onToggleRight()
                             } else {
                                 controller.revealBar()
@@ -136,73 +139,75 @@ struct TimeShiftOverlay: View {
     // MARK: - 信息块
 
     private var infoBlock: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 5) {
             topRow
             progressBar
             bottomRow
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.top, 8)
         .padding(.bottom, 6)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.62))
+                .fill(Color.black.opacity(0.72))
         )
     }
 
-    /// 进度条左上方：频道名；右上方：时移时间 / 实时时间
+    /// 单行：左=频道名；右=「回直播」+ 时移时间 / 实时时间（无标签文字）
     private var topRow: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(channelName)
-                    .font(.system(size: 17, weight: .bold))
+        HStack(alignment: .center, spacing: 8) {
+            Text(channelName)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .layoutPriority(1)
+
+            Spacer(minLength: 6)
+
+            Button(action: onExit) {
+                Text("回直播")
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white)
-                    .lineLimit(1)
-                statusLine
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.18)))
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(clockText(controller.shiftDate))
-                        .font(.system(size: 16, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan)
-                        .lineLimit(1)
-                    Text("/")
-                        .font(.system(size: 14, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.45))
-                    Text(clockText(controller.liveDate))
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.6))
-                        .lineLimit(1)
-                }
-
-                HStack(spacing: 8) {
-                    if let notice = controller.notice, !notice.isEmpty {
-                        Text(notice)
-                            .font(.system(size: 11))
-                            .foregroundColor(.orange)
-                    }
-                    Button(action: onExit) {
-                        Text("回直播")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.white.opacity(0.18)))
-                    }
-                    .buttonStyle(.plain)
-                }
+            HStack(spacing: 6) {
+                Text(clockText(controller.shiftDate))
+                    .font(.system(size: 16, weight: .bold, design: .monospaced))
+                    .foregroundColor(.cyan)
+                    .lineLimit(1)
+                Text("/")
+                    .font(.system(size: 14, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.45))
+                Text(clockText(controller.liveDate))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(1)
             }
         }
     }
 
+    private var programLine: some View {
+        HStack(spacing: 6) {
+            Text(dateText(controller.shiftDate))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.white.opacity(0.55))
+            Text(programText)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.9))
+                .lineLimit(1)
+        }
+    }
+
+    /// 底部左端：加载 / 失败时显示状态，正常时显示日期 + 当前节目
     @ViewBuilder
-    private var statusLine: some View {
+    private var statusOrProgram: some View {
         switch controller.status {
         case .idle:
-            EmptyView()
+            programLine
         case .loading:
             HStack(spacing: 5) {
                 ProgressView().scaleEffect(0.55)
@@ -210,17 +215,8 @@ struct TimeShiftOverlay: View {
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.65))
             }
-            .frame(height: 16)
         case .ready:
-            if controller.mode == .reload {
-                Text("该源不支持流内拖动，每次步进会重新取流")
-                    .font(.system(size: 10))
-                    .foregroundColor(.orange.opacity(0.85))
-            } else {
-                Text("时移中 · 左右划动 10s · 按住加速")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.45))
-            }
+            programLine
         case .failed(let reason):
             HStack(spacing: 8) {
                 Text(reason)
@@ -241,16 +237,16 @@ struct TimeShiftOverlay: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.white.opacity(0.16))
-                    .frame(height: 6)
+                    .frame(height: 4)
                 Capsule()
                     .fill(LinearGradient(colors: [.cyan, .blue],
                                          startPoint: .leading,
                                          endPoint: .trailing))
-                    .frame(width: max(0, geo.size.width * playedRatio), height: 6)
+                    .frame(width: max(0, geo.size.width * playedRatio), height: 4)
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 13, height: 13)
-                    .offset(x: max(0, geo.size.width * playedRatio - 6.5))
+                    .frame(width: 12, height: 12)
+                    .offset(x: max(0, geo.size.width * playedRatio - 6))
             }
             .frame(maxHeight: .infinity, alignment: .center)
             .contentShape(Rectangle())
@@ -269,7 +265,7 @@ struct TimeShiftOverlay: View {
                     }
             )
         }
-        .frame(height: 22)
+        .frame(height: 16)
     }
 
     /// 触点横坐标 → 时间轴比例（宽度异常时兜底为 0，别让除零把 UI 弄坏）。
@@ -278,20 +274,14 @@ struct TimeShiftOverlay: View {
         return min(max(Double(x / width), 0), 1)
     }
 
-    /// 进度条左下方：日期 + 当前时移节目；右下方：倍速、列表
+    /// 单行：左=日期+节目（或加载/错误状态）；右=倍速、列表
     private var bottomRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(dateText(controller.shiftDate))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.55))
-                Text(programText)
-                    .font(.system(size: 13))
-                    .foregroundColor(.white.opacity(0.9))
-                    .lineLimit(1)
-            }
+        HStack(alignment: .center, spacing: 8) {
+            statusOrProgram
+                .lineLimit(1)
+                .layoutPriority(1)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
 
             rateMenu
 
@@ -312,7 +302,7 @@ struct TimeShiftOverlay: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(height: 32)
+        .frame(height: 24)
     }
 
     private var rateMenu: some View {
