@@ -21,15 +21,12 @@ struct TimeShiftOverlay: View {
     let activeGroup: ChannelGroup?
     let onExit: () -> Void
     let onPlayPause: () -> Void
-    let onSelectGroup: (ChannelGroup) -> Void
     /// 隐藏底栏时，用与直播相同的设定唤出左 / 右栏。
     let onToggleLeft: () -> Void
     let onToggleRight: () -> Void
     /// 左右栏是否已打开：打开时整个时移层让位，由底层侧栏点击区负责开 / 关，避免抢手势。
     let panelsOpen: Bool
 
-    @State private var showList = false
-    @State private var search = ""
     @State private var dragging = false
     @State private var dragRatio: Double = 0
 
@@ -49,6 +46,8 @@ struct TimeShiftOverlay: View {
         ZStack {
             Color.black.opacity(0.22)
                 .ignoresSafeArea()
+                // 左右栏打开时让位：点栏外区域穿透到直播边缘点击层（与直播同款开 / 关逻辑）
+                .allowsHitTesting(!panelsOpen)
 
             // 手势层：左热区 / 中间播放暂停 / 右热区（底栏隐藏或左右栏打开时让位）
             HStack(spacing: 0) {
@@ -74,11 +73,6 @@ struct TimeShiftOverlay: View {
             .allowsHitTesting(controller.barVisible && !panelsOpen)
             .animation(.easeInOut(duration: 0.25), value: controller.barVisible)
 
-            if showList {
-                listPanel
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-
             // 底栏隐藏且左右栏未打开：屏幕退化成直播式交互——左 / 右侧开栏，其余处显栏。
             if !controller.barVisible && !panelsOpen {
                 hiddenTapLayer
@@ -88,8 +82,8 @@ struct TimeShiftOverlay: View {
         .onAppear { controller.revealBar() }
     }
 
-    /// 底栏隐藏时的透明可触击层：底部区域（原底栏位置）点一下唤出底栏；
-    /// 上方左右边缘分别开左 / 右栏，上方中间也唤出底栏。
+    /// 底栏隐藏时的透明可触击层：与直播完全一致——左右各半屏分别开左 / 右栏，
+    /// 底部一条（约 90pt）保留给「点下方唤出底栏」，避免两条手势抢同一片区域。
     private var hiddenTapLayer: some View {
         GeometryReader { geo in
             Color.clear
@@ -99,15 +93,13 @@ struct TimeShiftOverlay: View {
                     DragGesture(minimumDistance: 0)
                         .onEnded { value in
                             let x = geo.size.width > 0 ? value.location.x / geo.size.width : 0.5
-                            let y = geo.size.height > 0 ? value.location.y / geo.size.height : 0.5
-                            if y > 0.65 {
+                            let y = value.location.y
+                            if y > geo.size.height - 90 {
                                 controller.revealBar()
-                            } else if x < 0.25 {
+                            } else if x < 0.5 {
                                 onToggleLeft()
-                            } else if x > 0.75 {
-                                onToggleRight()
                             } else {
-                                controller.revealBar()
+                                onToggleRight()
                             }
                         }
                 )
@@ -287,7 +279,8 @@ struct TimeShiftOverlay: View {
 
             Button(action: {
                 controller.revealBar()
-                withAnimation(.easeInOut(duration: 0.2)) { showList.toggle() }
+                // 与直播「点左侧边缘开左栏」同一套逻辑：列表 = 直播左栏（播放 / 频道 / 节目单）
+                onToggleLeft()
             }) {
                 HStack(spacing: 5) {
                     Image(systemName: "list.bullet")
@@ -298,7 +291,7 @@ struct TimeShiftOverlay: View {
                 .foregroundColor(.white)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Capsule().fill(showList ? Color.cyan.opacity(0.35) : Color.white.opacity(0.16)))
+                .background(Capsule().fill(Color.white.opacity(0.16)))
             }
             .buttonStyle(.plain)
         }
@@ -326,101 +319,7 @@ struct TimeShiftOverlay: View {
         }
     }
 
-    // MARK: - 播放列表
-
-    /// 传入已过滤好的列表，避免在 ForEach 里反复重算（大列表下开销明显）。
-    private var listPanel: some View {
-        channelListPanel(filteredGroups)
-    }
-
-    private func channelListPanel(_ groups: [ChannelGroup]) -> some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.45))
-                    TextField("搜索频道", text: $search)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .textFieldStyle(.plain)
-                    Text("\(groups.count)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Rectangle().fill(Color.white.opacity(0.06)))
-
-                ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(groups.indices, id: \.self) { index in
-                            channelRow(index: index + 1, group: groups[index])
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .frame(width: 280)
-            .background(Rectangle().fill(Color(white: 0.07).opacity(0.97)))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .padding(.leading, 12)
-            .padding(.vertical, 12)
-
-            // 面板外侧：点一下收起，不穿透到时移手势
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showList = false } }
-        }
-    }
-
-    private func channelRow(index: Int, group: ChannelGroup) -> some View {
-        let isActive = group.name == activeGroup?.name
-        let program = store.programInfo(for: group.primary, at: Date()).now
-        return Button(action: { onSelectGroup(group) }) {
-            HStack(spacing: 8) {
-                Text(String(format: "%02d", index))
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.black)
-                    .frame(width: 22, height: 16)
-                    .background(Capsule().fill(Color.cyan.opacity(0.9)))
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(group.name)
-                        .font(.system(size: 13, weight: isActive ? .bold : .regular))
-                        .foregroundColor(isActive ? .cyan : .white.opacity(0.88))
-                        .lineLimit(1)
-                    if let program {
-                        Text(program.title)
-                            .font(.system(size: 10))
-                            .foregroundColor(.white.opacity(0.42))
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer(minLength: 0)
-
-                if group.lineCount > 1 {
-                    Text("\(group.lineCount)")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white.opacity(0.45))
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Rectangle().fill(isActive ? Color.cyan.opacity(0.12) : Color.clear))
-        }
-        .buttonStyle(.plain)
-    }
-
     // MARK: - 工具
-
-    private var filteredGroups: [ChannelGroup] {
-        let keyword = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let groups = store.currentGroups
-        guard !keyword.isEmpty else { return groups }
-        return groups.filter { $0.name.localizedCaseInsensitiveContains(keyword) }
-    }
 
     private var programText: String {
         let channel = activeGroup?.primary

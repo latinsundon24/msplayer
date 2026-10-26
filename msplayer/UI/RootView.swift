@@ -116,10 +116,6 @@ struct RootView: View {
                     activeGroup: currentGroup,
                     onExit: { timeShift.exitToLive() },
                     onPlayPause: { player.toggle() },
-                    onSelectGroup: { group in
-                        timeShift.deactivate()
-                        play(group: group, line: 0)
-                    },
                     onToggleLeft: { toggleLeft() },
                     onToggleRight: { toggleRight() },
                     panelsOpen: visiblePanel != nil
