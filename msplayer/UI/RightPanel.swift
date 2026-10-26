@@ -25,6 +25,7 @@ struct RightPanel: View {
             item(.epg, icon: "calendar", title: "EPG订阅")
             item(.display, icon: "aspectratio", title: "显示设置")
             item(.decoder, icon: "cpu", title: "解码更换")
+            item(.tracks, icon: "captions.bubble", title: "音轨字幕")
             item(.app, icon: "gearshape", title: "应用设置")
             item(.about, icon: "info.circle", title: "关于应用")
 

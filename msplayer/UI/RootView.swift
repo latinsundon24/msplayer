@@ -17,6 +17,7 @@ enum MenuSheet: String, Identifiable {
     case epg
     case display
     case decoder
+    case tracks
     case app
     case about
 
@@ -264,6 +265,8 @@ struct RootView: View {
             DecoderSheet(player: player) {
                 if let group = currentGroup { play(group: group, line: lineIndex) }
             }
+        case .tracks:
+            TrackSheet(player: player)
         case .app:
             AppSettingsSheet()
         case .about:

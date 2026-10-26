@@ -6,6 +6,7 @@ final class DASHStream {
     enum Kind: String {
         case video
         case audio
+        case subtitle
     }
 
     let kind: Kind

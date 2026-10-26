@@ -43,6 +43,71 @@ final class PlayerController: NSObject, ObservableObject {
     var onEnded: (() -> Void)?
     var onPlaybackStarted: (() -> Void)?
 
+    // MARK: - 音轨 / 字幕（多语言直播）
+
+    /// 一条可选的音轨或字幕
+    struct MediaTrackChoice: Identifiable {
+        let id: String
+        let title: String
+        let detail: String?
+        /// nil 表示「关闭这一轨」
+        let option: AVMediaSelectionOption?
+
+        var isOff: Bool { option == nil }
+
+        init(title: String, detail: String?, option: AVMediaSelectionOption?) {
+            self.id = title
+            self.title = title
+            self.detail = detail
+            self.option = option
+        }
+    }
+
+    /// 读取某个特性（`.audible` 音轨 / `.legible` 字幕）当前可选的项目。
+    ///
+    /// `AVAsset` 要先加载 `availableMediaCharacteristicsWithMediaSelectionOptions` 才能拿到 group，
+    /// 所以走 `loadValuesAsynchronously`，结果回主线程。
+    ///
+    /// - Parameters:
+    ///   - characteristic: 要读取的特性。
+    ///   - allowsOff: 是否额外给出「关闭」项（字幕需要，音轨一般不需要）。
+    func loadMediaTrackChoices(_ characteristic: AVMediaCharacteristic,
+                               allowsOff: Bool = false,
+                               completion: @escaping ([MediaTrackChoice]) -> Void) {
+        guard let item = avPlayer.currentItem else {
+            completion([])
+            return
+        }
+        let asset = item.asset
+        asset.loadValuesAsynchronously(forKeys: ["availableMediaCharacteristicsWithMediaSelectionOptions"]) {
+            let group = asset.mediaSelectionGroup(forMediaCharacteristic: characteristic)
+            var choices: [MediaTrackChoice] = []
+            for option in group?.options ?? [] {
+                let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolved = name.isEmpty ? "未命名" : name
+                let detail = option.extendedLanguageTag ?? option.locale?.identifier
+                choices.append(MediaTrackChoice(title: resolved, detail: detail, option: option))
+            }
+            if allowsOff {
+                choices.append(MediaTrackChoice(title: "关闭", detail: nil, option: nil))
+            }
+            DispatchQueue.main.async { completion(choices) }
+        }
+    }
+
+    /// 该特性的默认选项，用来给列表打初始勾（拿不到则返回 nil）
+    func defaultMediaTrack(_ characteristic: AVMediaCharacteristic) -> AVMediaSelectionOption? {
+        guard let item = avPlayer.currentItem else { return nil }
+        return item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic)?.defaultOption
+    }
+
+    /// 切换音轨 / 字幕；`option` 传 nil 表示关闭
+    func selectMediaTrack(_ option: AVMediaSelectionOption?, characteristic: AVMediaCharacteristic) {
+        guard let item = avPlayer.currentItem,
+              let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return }
+        item.select(option, in: group)
+    }
+
     // MARK: - 私有状态
 
     private var dash: DashPlayback?
