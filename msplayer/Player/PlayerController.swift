@@ -692,6 +692,19 @@ final class PlayerController: NSObject, ObservableObject {
         await dash?.enableTimeShift()
     }
 
+    /// 源站时移缓冲允许回看到的最早时刻；nil 表示源站没声明（未知）。
+    var dashTimeShiftEarliest: Date? { dash?.timeShiftAvailableStart }
+
+    /// 把 DASH 时移切换到「以 `end` 结束的一页」，用于往更早翻页。
+    func moveDashTimeShiftPage(endingAt end: Date) async {
+        await dash?.moveTimeShiftPage(endingAt: end)
+    }
+
+    /// 时移分页回到跟随直播（退出时移前调用，否则播放列表还停在历史那一页）
+    func followDashLivePage() {
+        dash?.followLiveTimeShift()
+    }
+
     /// 直接跳到某个播出时刻。
     func seekToDashDate(_ date: Date) {
         guard backend == .system, let dash, let item = avPlayer.currentItem else { return }

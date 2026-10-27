@@ -147,12 +147,17 @@ final class DASHStream {
         var candidates: [Segment] = []
 
         if !template.timeline.isEmpty {
-            // 有源站时移窗口时，按窗口长度换算展开上限，否则 r=-1 只会展开默认的 600 条
-            let repeatCap = timeShiftBuffer.map { min(20000, Int(ceil($0 / 0.5)) + maxCount) }
-            for (position, entry) in expandedTimeline(repeatCap: repeatCap).enumerated() {
+            // 7 天时移的时间线可能有几十万条分片，逐条展开会把每次刷新都拖慢。
+            // 这里只从「需要的最后 maxCount 片」附近开始展开，序号照样正确对齐。
+            let estSeg = template.timeline.last.map { $0.d / ts } ?? 2
+            let fromSeconds = mediaElapsed.map { edge -> Double in
+                max(0, edge - Double(maxCount + 16) * max(estSeg, 0.5) - 30)
+            }
+            let expanded = expandedTimeline(fromSeconds: fromSeconds, maxItems: maxCount + 16)
+            for (position, entry) in expanded.items.enumerated() {
                 let startSeconds = entry.t / ts - ptoSeconds
                 let endSeconds = startSeconds + entry.d / ts
-                let number = template.startNumber + position
+                let number = template.startNumber + expanded.firstIndex + position
                 if let edge = mediaElapsed {
                     guard endSeconds <= edge + 0.5 else { continue }
                     if let tsb = timeShiftBuffer, startSeconds < edge - tsb { continue }
@@ -185,37 +190,65 @@ final class DASHStream {
         return Array(candidates.suffix(maxCount))
     }
 
-    private func expandedTimeline(repeatCap: Int? = nil) -> [(t: Double, d: Double)] {
-        guard let template = template else { return [] }
+    /// 展开 SegmentTimeline。
+    ///
+    /// 直播清单常用 `r=-1`（一直重复下去），若从第一条开始逐条展开，7 天时移就是几十万条，
+    /// 每秒刷新都跑一遍会把主线程拖死。这里直接按时间跳到大致的起点，只展开需要的那些。
+    ///
+    /// - Parameters:
+    ///   - fromSeconds: 只需要这个呈现时刻（秒，已扣除 pto）之后的分片；nil 表示从头展开
+    ///   - maxItems: `r=-1` 段最多展开多少条
+    /// - Returns: 展开出来的条目，以及第一条在整条时间线里的下标（算 media number 用）
+    private func expandedTimeline(fromSeconds: Double? = nil,
+                                  maxItems: Int? = nil) -> (items: [(t: Double, d: Double)], firstIndex: Int) {
+        guard let template else { return ([], 0) }
         var out: [(t: Double, d: Double)] = []
         var current: Double = 0
-        let periodEnd = (period.duration ?? 0) * (template.timescale > 0 ? template.timescale : 1)
+        var index = 0
+        var firstIndex = -1
+        let ts = template.timescale > 0 ? template.timescale : 1
+        let periodEnd = (period.duration ?? 0) * ts
+
+        // 需要的最早原始时间戳（timeline 里的 t 含 pto，换算回 raw 才好比较）
+        let needRaw = fromSeconds.map { ($0 + template.pto / ts) * ts }
+
+        func take(_ t: Double, _ d: Double) {
+            if firstIndex < 0 { firstIndex = index }
+            out.append((t, d))
+            index += 1
+        }
 
         for entry in template.timeline {
             if entry.t > 0 { current = entry.t }
-            let repeatCount = entry.r >= 0 ? entry.r + 1 : 1
             if entry.r < 0 {
                 // r = -1：一直重复到 Period 结束；直播清单没有总时长时，先展开一段足够长的窗口
                 var t = current
                 var guardCount = 0
-                // 默认 600 条按 2 秒分片只有 20 分钟，会把时移窗口卡死；
-                // 调用方给了 repeatCap（按源站 timeShiftBufferDepth 换算）就按它展开。
-                let cap = periodEnd > 0 ? 20000 : (repeatCap ?? 600)
+                if let needRaw, entry.d > 0, needRaw > t {
+                    // 起点之前的分片整段跳过；序号要同步累加，否则 media number 会错位
+                    let skip = Int(floor((needRaw - t) / entry.d))
+                    if skip > 0 {
+                        t += Double(skip) * entry.d
+                        index += skip
+                        current = t
+                    }
+                }
+                let cap = periodEnd > 0 ? 20000 : (maxItems ?? 600)
                 while guardCount < cap {
                     if periodEnd > 0 && t + entry.d > periodEnd { break }
-                    out.append((t, entry.d))
+                    take(t, entry.d)
                     t += entry.d
                     guardCount += 1
                 }
                 current = t
             } else {
-                for _ in 0..<repeatCount {
-                    out.append((current, entry.d))
+                for _ in 0..<(entry.r + 1) {
+                    take(current, entry.d)
                     current += entry.d
                 }
             }
         }
-        return out
+        return (out, max(firstIndex, 0))
     }
 
     // MARK: - 直播刷新

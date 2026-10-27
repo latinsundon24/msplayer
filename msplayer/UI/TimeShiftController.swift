@@ -34,14 +34,14 @@ final class TimeShiftController: ObservableObject {
 
     /// 时移窗口保留的历史长度（单页）。
     private static let historyWindow: TimeInterval = 30 * 60
-    /// 向前扩展一页的步长：拖到最左端还不够早时，一次往更早推这么多。
+    /// 向前翻一页的步长：拖到最左端还不够早时，一次往更早推这么多。
     static let extendStep: TimeInterval = 30 * 60
-    /// 可回看的绝对上限：再往前源站也不会给，跟 DASH 那边的窗口上限保持一致。
-    static let maxHistoryWindow: TimeInterval = 6 * 3600
     /// 重新取流时向后保留的余量。
     private static let forwardMargin: TimeInterval = 15 * 60
     /// 起播等待上限。
     private static let loadTimeout: UInt64 = 25_000_000_000
+    /// 连续翻页的最小间隔，避免一次拖动里翻好几页。
+    private static let extendCooldown: TimeInterval = 0.8
 
     // MARK: - 对外状态
 
@@ -59,6 +59,9 @@ final class TimeShiftController: ObservableObject {
     private var barHideTask: Task<Void, Never>?
 
     var isReady: Bool { status == .ready }
+
+    /// 当前页之后还有没有更近的画面可翻（已经贴着实时就不用翻了）
+    var canExtendLater: Bool { windowEnd < Date().addingTimeInterval(-60) }
 
     /// 显示时移底栏并重置自动隐藏计时（任意交互时调用）。
     func revealBar() {
@@ -82,6 +85,11 @@ final class TimeShiftController: ObservableObject {
     private var pendingSeek: Date?
     private var reloadTask: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
+    /// 上一次往前翻页的时刻：拖动时 onChanged 每帧都会调 extendEarlier，
+    /// 靠这个节流，别一次拖动翻好几页。
+    private var lastExtendAt: Date = .distantPast
+    /// DASH 翻页是否正在进行
+    private var extendingDash = false
 
     func attach(_ player: PlayerController) {
         self.player = player
@@ -127,7 +135,9 @@ final class TimeShiftController: ObservableObject {
         self.pendingSeek = nil
         let now = Date()
         self.liveDate = now
-        self.windowStart = now.addingTimeInterval(-Self.historyWindow)
+        // 首帧就按源站声明的时移深度给范围（7 天就 7 天），真实可拖范围由 refreshDashWindow 校准
+        let depth = player.dashTimeShiftEarliest.map { now.timeIntervalSince($0) } ?? Self.historyWindow
+        self.windowStart = now.addingTimeInterval(-max(depth, 60))
         self.windowEnd = now
         self.shiftDate = now.addingTimeInterval(-Self.entryDelay)
         self.barVisible = true
@@ -155,9 +165,15 @@ final class TimeShiftController: ObservableObject {
     func exitToLive() {
         if mode == .dash, let player {
             player.setRate(1)
-            player.seekToDashDate(Date())
-            player.play()
+            // 之前可能翻到了几天前，播放列表得先回到实时那一页，否则跳不回直播
+            player.followDashLivePage()
             deactivate()
+            Task { @MainActor in
+                // 播放列表刷新需要一点时间，等它换到实时分片再定位，不然会跳到旧页
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                player.seekToDashDate(Date())
+                player.play()
+            }
             return
         }
         guard let channel = self.channel, let player = self.player else {
@@ -180,6 +196,8 @@ final class TimeShiftController: ObservableObject {
         watchdog = nil
         pendingSeek = nil
         channel = nil
+        extendingDash = false
+        lastExtendAt = .distantPast
         barHideTask?.cancel()
         barHideTask = nil
         barVisible = true
@@ -213,13 +231,12 @@ final class TimeShiftController: ObservableObject {
             // 别让播放点退到窗口之前，否则 AVPlayer 会直接跳回实时
             let earliest = windowStart.addingTimeInterval(2)
             if clamped < earliest {
-                // DASH 的可回看范围由源站 MPD 的时移缓冲决定，本地没法凭空造出更早的分片，
-                // 这里把上限说清楚，而不是只丢一句含糊的「已到最早」。
-                notice = "该频道最多可回看 \(Int(windowEnd.timeIntervalSince(windowStart) / 60)) 分钟"
+                // 比这一页更早：往前翻一页，而不是把用户硬卡在页面起点
+                extendDashEarlier()
+                return
             }
-            let bounded = max(clamped, earliest)
-            shiftDate = bounded
-            player?.seekToDashDate(bounded)
+            shiftDate = clamped
+            player?.seekToDashDate(clamped)
             if !(player?.isPlaying ?? true) { player?.play() }
             return
         }
@@ -238,40 +255,121 @@ final class TimeShiftController: ObservableObject {
         }
     }
 
-    /// 把时移窗口的起点往更早扩展，覆盖到 `target`，然后直接定位到那里。
+    /// 往前翻一页，并定位到这一页的最右端。
     ///
-    /// 终点保持不变（只往前加历史），所以进度条会变宽、当前画面不跳；
-    /// 拖动到最左端可以连续往前翻页，直到源站允许的最早时间。
+    /// 新页面的终点就是当前页的起点，所以画面从「原来这一段的最开头」接着播过去，
+    /// 进度条上的滑块落在**最右端**——用户可以立刻从右往左拖，继续看更早的节目，
+    /// 不用先松手再去找位置。不设任何时间上限，一直翻到源站不给流为止。
     private func widenEarlier(to target: Date) {
         guard let channel else { return }
-        let oldest = liveDate.addingTimeInterval(-Self.maxHistoryWindow)
-        guard target > oldest else {
-            notice = "已到该频道可回看的最早时间（约 \(Int(Self.maxHistoryWindow / 3600)) 小时前）"
-            return
-        }
-        // 一次至少扩一页；跨度不够覆盖 target 时按需多扩
-        let span = max(Self.extendStep, windowStart.timeIntervalSince(target))
-        let newStart = max(windowStart.addingTimeInterval(-span), oldest)
-        guard windowEnd.timeIntervalSince(newStart) > 120 else { return }
+        // 一次至少翻一页；target 比一页还早时按需多翻
+        let page = max(Self.extendStep, windowStart.timeIntervalSince(target))
+        let newEnd = windowStart
+        let newStart = newEnd.addingTimeInterval(-page)
+        guard newEnd.timeIntervalSince(newStart) > 120 else { return }
+        // 拖到最左端时 target≈旧起点，落在新页最右端；有明确目标时间就定位到目标本身
+        let anchor = min(max(target, newStart.addingTimeInterval(1)), newEnd)
         reload(channel: channel,
                lineIndex: lineIndex,
                from: newStart,
-               to: windowEnd,
-               seekTo: target)
+               to: newEnd,
+               seekTo: anchor)
     }
 
-    /// 界面上把进度条拖到最左端时调用：继续往更早的画面翻一页。
-    /// DASH 由源站窗口决定，只能提示上限；其余模式扩窗口。
+    /// 界面上把进度条拖到最左端时调用：往前翻一页（可连续触发，节流在内部）。
     func extendEarlier() {
         guard status == .ready else { return }
         if mode == .dash {
-            refreshDashWindow()
-            let minutes = Int(windowEnd.timeIntervalSince(windowStart) / 60)
-            notice = "该频道最多可回看 \(minutes) 分钟"
+            extendDashEarlier()
             return
         }
-        let target = windowStart.addingTimeInterval(-Self.extendStep)
-        seek(to: target)
+        guard Date().timeIntervalSince(lastExtendAt) >= Self.extendCooldown else { return }
+        lastExtendAt = Date()
+        widenEarlier(to: windowStart)
+    }
+
+    /// 把进度条拖到最右端时调用：往后翻一页（回到更近的时间）。
+    ///
+    /// 翻完之后滑块落在新一页的**最左端**，可以接着往右拖——往回走同样不用松手重来。
+    func extendLater() {
+        guard status == .ready else { return }
+        let now = Date()
+        if windowEnd >= now.addingTimeInterval(-30) {
+            notice = Self.reachedLiveNotice
+            return
+        }
+        guard Date().timeIntervalSince(lastExtendAt) >= Self.extendCooldown else { return }
+        lastExtendAt = Date()
+        // 一页的宽度沿用当前页，别让翻页节奏忽大忽小
+        let page = max(windowEnd.timeIntervalSince(windowStart), Self.extendStep)
+        let newStart = windowEnd
+        let newEnd = min(newStart.addingTimeInterval(page), now)
+        guard newEnd.timeIntervalSince(newStart) > 120 else { return }
+
+        if mode == .dash {
+            moveDashPage(endingAt: newEnd,
+                         anchor: newStart,
+                         failNotice: "已到当前可回看的最新时间")
+            return
+        }
+        guard let channel else { return }
+        reload(channel: channel,
+               lineIndex: lineIndex,
+               from: newStart,
+               to: newEnd,
+               seekTo: newStart)
+    }
+
+    /// DASH 模式往前翻页：让播放列表切换成「以当前页起点结束」的那一段。
+    private func extendDashEarlier() {
+        guard let player, !extendingDash else { return }
+        guard Date().timeIntervalSince(lastExtendAt) >= Self.extendCooldown else { return }
+        if let earliest = player.dashTimeShiftEarliest,
+           windowStart.timeIntervalSince(earliest) < 30 {
+            notice = "已到该频道时移的最早时间（\(TimeShiftFormat.day.string(from: earliest))）"
+            return
+        }
+        lastExtendAt = Date()
+        // 新页的终点 = 当前页起点，锚点也在起点：滑块落在新页最右端，从右往左接着拖
+        moveDashPage(endingAt: windowStart,
+                     anchor: windowStart,
+                     failNotice: "已到该频道时移的最早时间")
+    }
+
+    /// DASH 换页：让本地播放列表整体切到「以 `end` 结束」的一段，再定位到 `anchor`。
+    private func moveDashPage(endingAt end: Date, anchor: Date, failNotice: String) {
+        guard let player, !extendingDash else { return }
+        extendingDash = true
+        notice = nil
+        reloadTask?.cancel()
+        reloadTask = Task { @MainActor in
+            self.status = .loading
+            await player.moveDashTimeShiftPage(endingAt: end)
+            guard !Task.isCancelled, self.isActive, self.mode == .dash else {
+                self.extendingDash = false
+                return
+            }
+            // 播放列表刚整段换过，给它一点时间生效再定位
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, self.isActive, self.mode == .dash else {
+                self.extendingDash = false
+                return
+            }
+            self.refreshDashWindow()
+            // 列表没真的挪过去：源站已经不给这一段分片了
+            if abs(self.windowEnd.timeIntervalSince(end)) > 120 {
+                self.notice = failNotice
+                self.status = .ready
+                self.extendingDash = false
+                return
+            }
+            let target = min(max(anchor, self.windowStart), self.windowEnd)
+            self.shiftDate = target
+            player.seekToDashDate(target)
+            self.status = .ready
+            self.extendingDash = false
+        }
+        armWatchdog()
     }
 
     private func seekWithinStream(to target: Date, now: Date) {

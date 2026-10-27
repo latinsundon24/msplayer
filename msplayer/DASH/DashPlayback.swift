@@ -70,26 +70,28 @@ final class DashPlayback {
 
     /// 常规直播在本地 HLS 里保留的最近分片数
     private static let liveKeepSegments = 12
-    /// 源站未声明 `timeShiftBufferDepth` 时，时移窗口的默认长度（秒）
-    private static let defaultTimeShiftWindowSeconds: Double = 30 * 60
-    /// 时移窗口硬上限（秒）：源站声明再大也不无限摊开，6 小时足够且不至于撑爆播放列表
-    private static let maxTimeShiftWindowSeconds: Double = 6 * 3600
-    /// 时移窗口分片预算的硬上限，防止极短分片源把内存和清单撑爆
-    private static let maxTimeShiftSegments = 12_000
-
-    /// 开启时移后，本地 HLS 暴露的可回退窗口（秒）。
+    /// 一页最多摊开多少分片。
     ///
-    /// 关键：**跟随源站声明的 `timeShiftBufferDepth`**——源站留了多久历史，
-    /// 就应该能回看多久。早期版本这里写死 30 分钟，导致源站明明留了 2 小时，
-    /// 进度条也只能拖到 30 分钟前，再往前直接拖不动。
-    private var timeShiftWindowSeconds: Double {
+    /// **这不是时间上限**——源站声明 7 天时移，那就能回看 7 天：
+    /// 分片数超出一页预算时只表示「这一页装不下」，拖到最前面会继续往前翻页，
+    /// 一直翻到源站不给分片为止。2 秒分片下约 5 小时一页，设这个数只是别把
+    /// 播放列表撑到几十万行（那样 AVPlayer 加载不动）。
+    private static let timeShiftPageSegments = 9_000
+
+    /// 一页能覆盖的时长（秒）。
+    ///
+    /// 跟随源站声明的 `timeShiftBufferDepth`，**不设任何时间上限**（7 天就是 7 天）；
+    /// 只有分片数超过一页预算时才切页。源站没声明深度时按一页的技术容量给，
+    /// 能翻多少翻多少，不自己编一个「最多 30 分钟」的限制出来。
+    private var timeShiftPageSpan: Double {
+        let capacity = max(Double(Self.timeShiftPageSegments) * averageSegmentDurationInLock, 60)
         guard let depth = document?.timeShiftBufferDepth, depth > 60 else {
-            return Self.defaultTimeShiftWindowSeconds
+            return capacity
         }
-        return min(depth, Self.maxTimeShiftWindowSeconds)
+        return min(depth, capacity)
     }
 
-    /// 平均分片时长（秒），用于把窗口时长换算成分片数；取不到就按 2 秒估。
+    /// 平均分片时长（秒），用于把时长换算成分片数；取不到就按 2 秒估。
     /// 注意：调用方都在锁内，必须用 `referenceWindowInLock()`，否则会死锁。
     private var averageSegmentDurationInLock: Double {
         guard let segments = referenceWindowInLock(), !segments.isEmpty else { return 2 }
@@ -98,11 +100,17 @@ final class DashPlayback {
         return max(total / Double(segments.count), 0.5)
     }
 
-    /// 时移窗口需要保留的分片预算：按「窗口时长 ÷ 平均分片时长」换算，带硬上限。
-    private var timeShiftSegmentBudget: Int {
-        let need = Int((timeShiftWindowSeconds / averageSegmentDurationInLock).rounded(.up))
+    /// 一页需要保留的分片数（按「一页时长 ÷ 平均分片时长」换算）
+    private var timeShiftPageBudget: Int {
+        let need = Int((timeShiftPageSpan / averageSegmentDurationInLock).rounded(.up))
             + Self.liveKeepSegments
-        return min(max(need, 96), Self.maxTimeShiftSegments)
+        return max(need, 96)
+    }
+
+    /// 源站时移缓冲允许回看到的最早时刻；源站没声明就返回 nil（表示未知，可继续往前试）
+    var timeShiftAvailableStart: Date? {
+        guard let depth = document?.timeShiftBufferDepth, depth > 60 else { return nil }
+        return Date().addingTimeInterval(-depth)
     }
 
     /// 同类轨道保留上限，避免清单与内存无谓膨胀
@@ -147,6 +155,9 @@ final class DashPlayback {
     private var timeShiftEnabled = false
     /// 刚打开时移窗口时置真：下一次刷新要整段替换窗口，把历史分片摊开
     private var historyPending = false
+    /// 时移分页的终点（墙钟时刻）。nil = 跟随直播；非 nil = 本地播放列表只摊开
+    /// 以该时刻结束的一页，用户可以继续往前翻页看更早的节目。
+    private var timeShiftPageEnd: Date?
 
     // MARK: - 墙钟时间轴（DASH → HLS 的 EXT-X-PROGRAM-DATE-TIME）
 
@@ -210,16 +221,51 @@ final class DashPlayback {
     ///
     /// 之后 AVPlayer 刷新一下播放列表就能看到更长的可 seek 区间，播放不会中断。
     func enableTimeShift() async {
-        guard timeShiftSupported, !timeShiftEnabled else { return }
+        guard timeShiftSupported else { return }
+        lock.lock()
+        // 每次重新进入时移都从「跟随直播」的那一页开始：
+        // 上一次可能翻到了几天前，不重置的话播放列表还停在旧页上，看不到实时。
         timeShiftEnabled = true
+        timeShiftPageEnd = nil
         // 下一轮刷新要整段替换窗口：常态只攒了十几片，光靠追加是补不出历史的
         historyPending = true
+        lock.unlock()
         guard let fresh = try? await fetchDocument(), let period = fresh.periods.first else { return }
         document = fresh
         for track in everyTrack {
             track.stream.updateBaseURL(manifest: manifestURL, doc: fresh, period: period)
         }
         refreshWindow(doc: fresh, initial: false)
+    }
+
+    /// 把时移窗口切到「以 `end` 结束的一页」，用于往更早翻页。
+    ///
+    /// 一页装不下源站的全部时移缓冲时（比如 7 天时移、2 秒分片），就靠它一段段往前挪：
+    /// 新的一页以旧页的起点结束，界面上的滑块自然落在新页的最右端，
+    /// 用户可以接着从右往左拖，看更早的节目。
+    func moveTimeShiftPage(endingAt end: Date) async {
+        guard timeShiftSupported else { return }
+        lock.lock()
+        timeShiftEnabled = true
+        timeShiftPageEnd = end
+        historyPending = true
+        lock.unlock()
+        guard let fresh = try? await fetchDocument(), let period = fresh.periods.first else { return }
+        document = fresh
+        for track in everyTrack {
+            track.stream.updateBaseURL(manifest: manifestURL, doc: fresh, period: period)
+        }
+        refreshWindow(doc: fresh, initial: false)
+    }
+
+    /// 回到跟随直播的窗口（不再停留在分页出来的历史段）
+    func followLiveTimeShift() {
+        guard timeShiftEnabled else { return }
+        lock.lock()
+        timeShiftPageEnd = nil
+        historyPending = true
+        lock.unlock()
+        if let document { refreshWindow(doc: document, initial: true) }
     }
 
     /// 本地播放列表此刻覆盖的墙钟区间；不支持时移时为 nil。
@@ -661,15 +707,19 @@ final class DashPlayback {
         lock.lock()
         defer { lock.unlock() }
 
+        // 分页到历史某段时，播放列表就以那一页的终点为「直播边缘」，
+        // 否则每秒刷新又会把窗口拽回实时，翻过去的页立刻失效。
+        let edge = timeShiftEnabled ? (timeShiftPageEnd ?? now) : now
+
         ptoSeconds = preferredTrack()?.stream.presentationTimeOffset ?? 0
         // 每次刷新都会同步 representation 的模板，再算窗口。
-        // 分片预算随时移窗口跟随源站而变，别再用固定的 900 片把 2 小时的源砍成 30 分钟。
-        let budget = timeShiftEnabled ? timeShiftSegmentBudget : Self.liveKeepSegments + 6
+        // 一页的分片数只跟「一页时长 ÷ 平均分片时长」有关，不再有任何时间上限。
+        let budget = timeShiftEnabled ? timeShiftPageBudget : Self.liveKeepSegments + 6
         let replaceHistory = historyPending
         historyPending = false
         for track in everyTrack {
             track.stream.syncTemplate(from: doc)
-            let segments = track.stream.liveSegments(now: now,
+            let segments = track.stream.liveSegments(now: edge,
                                                      availabilityStart: doc.availabilityStartTime,
                                                      timeShiftBuffer: doc.timeShiftBufferDepth,
                                                      maxCount: budget)
@@ -678,7 +728,7 @@ final class DashPlayback {
         if availabilityStart == nil, let last = referenceWindowInLock()?.last {
             // 源站没给 availabilityStartTime：反推出一个基准并保持稳定，
             // 否则每轮刷新 PDT 都会平移，AVPlayer 会误以为时间轴被改动。
-            let offset = now.timeIntervalSince1970 - (last.time + last.duration)
+            let offset = edge.timeIntervalSince1970 - (last.time + last.duration)
             if let current = inferredWallOffset, abs(current - offset) < 30 { return }
             inferredWallOffset = offset
         }
@@ -693,7 +743,11 @@ final class DashPlayback {
         // 以“呈现时间”去重：时间线滑动时 number 可能整体平移，time 不会
         var merged = track.window
         if initial || merged.isEmpty {
-            merged = segments
+            // 换页时源站可能根本不给那一段（分片为空），这时必须保留原窗口，
+            // 否则播放列表被清空，AVPlayer 会直接卡死。
+            if !segments.isEmpty || merged.isEmpty {
+                merged = segments
+            }
         } else {
             for segment in segments where segment.time > track.lastTime + 0.001 {
                 merged.append(segment)
@@ -708,11 +762,12 @@ final class DashPlayback {
         var seen = Set<String>()
         merged = merged.filter { seen.insert($0.key).inserted }
 
-        // 时移开启后按目标时长保留历史；常态只留最近十几片，够直播用即可
+        // 时移开启后按「一页」保留历史；常态只留最近十几片，够直播用即可。
+        // 一页之外的更早内容不丢——往前翻页时会整段重新摊开。
         if timeShiftEnabled {
             var remain = merged.reduce(0) { $0 + $1.duration }
             var head = 0
-            while remain > timeShiftWindowSeconds, head < merged.count - Self.liveKeepSegments {
+            while remain > timeShiftPageSpan, head < merged.count - Self.liveKeepSegments {
                 remain -= merged[head].duration
                 head += 1
             }
@@ -741,7 +796,7 @@ final class DashPlayback {
 
     /// 当前策略下每条轨道最多保留的分片数
     private var retainSegments: Int {
-        timeShiftEnabled ? timeShiftSegmentBudget : Self.liveKeepSegments
+        timeShiftEnabled ? timeShiftPageBudget : Self.liveKeepSegments
     }
 
     private func currentWindowCount() -> Int {

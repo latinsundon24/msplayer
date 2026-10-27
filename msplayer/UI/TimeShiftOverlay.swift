@@ -29,6 +29,8 @@ struct TimeShiftOverlay: View {
 
     @State private var dragging = false
     @State private var dragRatio: Double = 0
+    /// 拖到最左端时持续往前翻页的任务
+    @State private var autoScrollTask: Task<Void, Never>?
 
     private static let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -80,6 +82,7 @@ struct TimeShiftOverlay: View {
         }
         .onReceive(Self.ticker) { _ in controller.updateLiveDate() }
         .onAppear { controller.revealBar() }
+        .onDisappear { stopAutoScroll() }
     }
 
     /// 底栏隐藏时的透明可触击层：与直播完全一致——左右各半屏分别开左 / 右栏，
@@ -208,7 +211,16 @@ struct TimeShiftOverlay: View {
                     .foregroundColor(.white.opacity(0.65))
             }
         case .ready:
-            programLine
+            // 时移的各种状态（已到最早 / 已追上实时 / 正在切页）以前只写进变量、没显示出来，
+            // 用户完全看不到反馈，这里补上。
+            if let notice = controller.notice {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .lineLimit(1)
+            } else {
+                programLine
+            }
         case .failed(let reason):
             HStack(spacing: 8) {
                 Text(reason)
@@ -245,25 +257,57 @@ struct TimeShiftOverlay: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        let ratio = Self.ratio(at: value.location.x, width: geo.size.width)
                         dragging = true
-                        dragRatio = Self.ratio(at: value.location.x, width: geo.size.width)
+                        dragRatio = ratio
                         controller.revealBar()
+                        // 拖到两端就自动翻页，不需要松手再重拖：
+                        // 往左翻 = 看更早，翻完滑块落在新页最右端；往右翻 = 回到更近，落在最左端。
+                        if ratio <= 0.012 {
+                            beginAutoScroll(direction: -1)
+                        } else if ratio >= 0.988, controller.canExtendLater {
+                            beginAutoScroll(direction: 1)
+                        } else {
+                            stopAutoScroll()
+                        }
                     }
                     .onEnded { value in
                         let ratio = Self.ratio(at: value.location.x, width: geo.size.width)
                         dragging = false
                         controller.revealBar()
-                        if ratio <= 0.01 {
-                            // 拖到最左端 = 想看更早的画面：继续往前翻一页。
-                            // 之前这里直接 seek 到窗口起点，窗口不动，于是「拖到头就再也拉不过去」。
+                        if ratio <= 0.02 {
+                            // 拖到最左端 = 想看更早的画面：往前翻一页
                             controller.extendEarlier()
+                        } else if ratio >= 0.98, controller.canExtendLater {
+                            controller.extendLater()
                         } else {
                             controller.seek(to: controller.windowStart.addingTimeInterval(total * ratio))
                         }
+                        stopAutoScroll()
                     }
             )
         }
         .frame(height: 16)
+    }
+
+    /// 按住进度条某一端不放时，持续往那个方向翻页（每页至少停留一会儿，等流切过去）
+    private func beginAutoScroll(direction: Int) {
+        guard autoScrollTask == nil else { return }
+        autoScrollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if direction < 0 {
+                    controller.extendEarlier()
+                } else {
+                    controller.extendLater()
+                }
+                try? await Task.sleep(nanoseconds: 1_300_000_000)
+            }
+        }
+    }
+
+    private func stopAutoScroll() {
+        autoScrollTask?.cancel()
+        autoScrollTask = nil
     }
 
     /// 触点横坐标 → 时间轴比例（宽度异常时兜底为 0，别让除零把 UI 弄坏）。
