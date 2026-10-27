@@ -68,6 +68,13 @@ final class DashPlayback {
         }
     }
 
+    /// 常规直播在本地 HLS 里保留的最近分片数
+    private static let liveKeepSegments = 12
+    /// 开启时移后，本地 HLS 暴露的可回退窗口（秒）
+    static let timeShiftWindowSeconds: Double = 30 * 60
+    /// 时移窗口的分片上限：小分片源站据此收敛，避免播放列表无限膨胀
+    private static let timeShiftMaxSegments = 900
+
     /// 同类轨道保留上限，避免清单与内存无谓膨胀
     private static let maxVideoTracks = 6
     private static let maxAudioTracks = 4
@@ -105,6 +112,30 @@ final class DashPlayback {
 
     private var keys: [String: String] = [:]
 
+    /// 是否已打开时移窗口。常规直播只保留最近十几片，省流量也省内存；
+    /// 用户进入时移后才把源站可回溯的历史分片摊开给 AVPlayer。
+    private var timeShiftEnabled = false
+    /// 刚打开时移窗口时置真：下一次刷新要整段替换窗口，把历史分片摊开
+    private var historyPending = false
+
+    // MARK: - 墙钟时间轴（DASH → HLS 的 EXT-X-PROGRAM-DATE-TIME）
+
+    /// MPD 的 availabilityStartTime
+    private var availabilityStart: Date?
+    /// Period 起点（秒）
+    private var periodStartSeconds: Double = 0
+    /// presentationTimeOffset（秒），每条 SegmentTemplate 可能不同
+    private var ptoSeconds: Double = 0
+    /// 源站没给 availabilityStartTime 时，用「最新分片 ≈ 当前时刻」推断出来的基准
+    private var inferredWallOffset: TimeInterval?
+
+    private static let pdtFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+        return formatter
+    }()
     private var cache: [String: Data] = [:]
     private var cacheOrder: [String] = []
     private let cacheLimit = 48 * 1024 * 1024
@@ -131,6 +162,96 @@ final class DashPlayback {
     var isLive: Bool { document?.isDynamic ?? false }
     var isEncrypted: Bool { everyTrack.contains { $0.encrypted } }
 
+    // MARK: - 直播时移
+
+    /// 是否支持原生直播时移：动态清单 + 源站留有可回溯窗口。
+    ///
+    /// 与地址里带 `playseek` 参数的那种时移不同，这条路**不需要重新拉流**：源站本来就把
+    /// 过去几十分钟到几小时的分片放在时移缓冲里，本地 HLS 只要把它们摊开列进播放列表，
+    /// AVPlayer 就能直接拖动到窗口内的任意历史时刻。
+    var timeShiftSupported: Bool {
+        guard document?.isDynamic == true else { return false }
+        if let depth = document?.timeShiftBufferDepth { return depth >= 60 }
+        // 不声明 timeShiftBufferDepth 的动态清单大概率仍可回溯，允许尝试
+        return true
+    }
+
+    /// 打开时移窗口：立刻把源站时移缓冲内的历史分片补进本地播放列表。
+    ///
+    /// 之后 AVPlayer 刷新一下播放列表就能看到更长的可 seek 区间，播放不会中断。
+    func enableTimeShift() async {
+        guard timeShiftSupported, !timeShiftEnabled else { return }
+        timeShiftEnabled = true
+        // 下一轮刷新要整段替换窗口：常态只攒了十几片，光靠追加是补不出历史的
+        historyPending = true
+        guard let fresh = try? await fetchDocument(), let period = fresh.periods.first else { return }
+        document = fresh
+        for track in everyTrack {
+            track.stream.updateBaseURL(manifest: manifestURL, doc: fresh, period: period)
+        }
+        refreshWindow(doc: fresh, initial: false)
+    }
+
+    /// 本地播放列表此刻覆盖的墙钟区间；不支持时移时为 nil。
+    var timeShiftWindow: (start: Date, end: Date)? {
+        guard isLive, let reference = referenceWindow(), let last = reference.last else { return nil }
+        lock.lock()
+        let offset = wallOffset
+        lock.unlock()
+        guard let offset else { return nil }
+        guard let first = reference.first else { return nil }
+        let start = Date(timeIntervalSince1970: offset + first.time)
+        let end = Date(timeIntervalSince1970: offset + last.time + last.duration)
+        // 末端按当前时刻收敛，别让界面给人一种可以跳到未来的错觉
+        return (start, min(end, Date()))
+    }
+
+    /// 把本地播放列表里的位置（秒，从列表头算起）换算成墙钟时刻。
+    func wallDate(forLocalTime time: Double) -> Date? {
+        guard let first = referenceWindow()?.first else { return nil }
+        lock.lock()
+        let offset = wallOffset
+        lock.unlock()
+        guard let offset else { return nil }
+        return Date(timeIntervalSince1970: offset + first.time + time)
+    }
+
+    /// 把墙钟时刻换算回本地播放列表里的位置（秒）。
+    func localTime(forWallDate date: Date) -> Double? {
+        guard let window = referenceWindow(), let first = window.first else { return nil }
+        lock.lock()
+        let offset = wallOffset
+        lock.unlock()
+        guard let offset else { return nil }
+        let target = date.timeIntervalSince1970 - offset
+        guard target > first.time else { return 0 }
+        var position = 0.0
+        for segment in window {
+            if target < segment.time + segment.duration { break }
+            position += segment.duration
+        }
+        return position
+    }
+
+    /// 主轨（用于算播放列表墙钟基准）：有视频就用第一档视频，否则用第一条音轨。
+    private func preferredTrack() -> Track? {
+        videoTracks.first ?? audioTracks.first
+    }
+
+    private func referenceWindow() -> [DASHStream.Segment]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return preferredTrack()?.window
+    }
+
+    /// 墙钟基准：presentationTime t 对应的 Unix 时间 = wallOffset + t
+    private var wallOffset: TimeInterval? {
+        if let availabilityStart {
+            return availabilityStart.timeIntervalSince1970 + periodStartSeconds + ptoSeconds
+        }
+        return inferredWallOffset
+    }
+
     // MARK: - 生命周期
 
     func start() async throws -> URL {
@@ -145,9 +266,13 @@ final class DashPlayback {
         }
         document = doc
         guard let period = doc.periods.first else { throw Failure.noStream }
+        // 墙钟基准：分片时间 t 对应的真实时刻 = availabilityStartTime + period.start + pto + t
+        availabilityStart = doc.availabilityStartTime
+        periodStartSeconds = period.start ?? 0
 
         buildTracks(doc: doc, period: period)
         guard !videoTracks.isEmpty || !audioTracks.isEmpty else { throw Failure.noStream }
+        ptoSeconds = preferredTrack()?.stream.presentationTimeOffset ?? 0
 
         // 有些 MPD 只在 <MPD> 上声明总时长
         if period.duration == nil, let total = doc.mediaPresentationDuration {
@@ -173,6 +298,10 @@ final class DashPlayback {
         }
 
         if doc.isDynamic {
+            // 支持时移的动态流从一开始就把这段历史摊开。
+            // 若等播放中途再扩窗口，同一个 media sequence 号会突然指向更早的分片，
+            // AVFoundation 认不出来，很容易跳错位置甚至卡住；一开始给全就不会有这事。
+            timeShiftEnabled = timeShiftSupported
             refreshWindow(doc: doc, initial: true)
             // 等直播窗口里至少有 2 个分片，避免 AVPlayer 拿到空清单
             var waited = 0
@@ -502,19 +631,35 @@ final class DashPlayback {
         lock.lock()
         defer { lock.unlock() }
 
+        ptoSeconds = preferredTrack()?.stream.presentationTimeOffset ?? 0
+        // 每次刷新都会同步 representation 的模板，再算窗口
+        let budget = timeShiftEnabled ? Self.timeShiftMaxSegments : Self.liveKeepSegments + 6
+        let replaceHistory = historyPending
+        historyPending = false
         for track in everyTrack {
-            // 直播时间线随服务端前移，先用本次清单刷新模板再算窗口
             track.stream.syncTemplate(from: doc)
             let segments = track.stream.liveSegments(now: now,
                                                      availabilityStart: doc.availabilityStartTime,
-                                                     timeShiftBuffer: doc.timeShiftBufferDepth)
-            append(segments, to: track, initial: initial)
+                                                     timeShiftBuffer: doc.timeShiftBufferDepth,
+                                                     maxCount: budget)
+            append(segments, to: track, initial: initial || replaceHistory)
         }
+        if availabilityStart == nil, let last = referenceWindowInLock()?.last {
+            // 源站没给 availabilityStartTime：反推出一个基准并保持稳定，
+            // 否则每轮刷新 PDT 都会平移，AVPlayer 会误以为时间轴被改动。
+            let offset = now.timeIntervalSince1970 - (last.time + last.duration)
+            if let current = inferredWallOffset, abs(current - offset) < 30 { return }
+            inferredWallOffset = offset
+        }
+    }
+
+    /// 已在锁内时取主轨窗口；`referenceWindow()` 会自己加锁，别在锁里调用。
+    private func referenceWindowInLock() -> [DASHStream.Segment]? {
+        preferredTrack()?.window
     }
 
     private func append(_ segments: [DASHStream.Segment], to track: Track, initial: Bool) {
         // 以“呈现时间”去重：时间线滑动时 number 可能整体平移，time 不会
-        let keep = 12
         var merged = track.window
         if initial || merged.isEmpty {
             merged = segments
@@ -532,20 +677,40 @@ final class DashPlayback {
         var seen = Set<String>()
         merged = merged.filter { seen.insert($0.key).inserted }
 
-        if merged.count > keep {
-            let removeCount = merged.count - keep
+        // 时移开启后按目标时长保留历史；常态只留最近十几片，够直播用即可
+        if timeShiftEnabled {
+            var remain = merged.reduce(0) { $0 + $1.duration }
+            var head = 0
+            while remain > Self.timeShiftWindowSeconds, head < merged.count - Self.liveKeepSegments {
+                remain -= merged[head].duration
+                head += 1
+            }
+            if head > 0 {
+                track.dropped += head
+                merged.removeFirst(head)
+            }
+        }
+
+        if merged.count > retainSegments {
+            let removeCount = merged.count - retainSegments
             track.dropped += removeCount
             merged.removeFirst(removeCount)
         }
         for segment in merged {
             track.map[track.segmentName(key: segment.key)] = segment
         }
-        // 只保留最近的映射，避免无界增长
-        if track.map.count > 96 {
+        // 只保留最近的映射，避免无界增长；时移窗口多大就得留多少，否则拖回来找不到分片
+        let mapLimit = max(96, retainSegments)
+        if track.map.count > mapLimit {
             let sorted = track.map.sorted { $0.value.time < $1.value.time }
-            for item in sorted.prefix(track.map.count - 96) { track.map.removeValue(forKey: item.key) }
+            for item in sorted.prefix(track.map.count - mapLimit) { track.map.removeValue(forKey: item.key) }
         }
         track.window = merged
+    }
+
+    /// 当前策略下每条轨道最多保留的分片数
+    private var retainSegments: Int {
+        timeShiftEnabled ? Self.timeShiftMaxSegments : Self.liveKeepSegments
     }
 
     private func currentWindowCount() -> Int {
@@ -786,7 +951,13 @@ final class DashPlayback {
         if !track.isSubtitle {
             text += "#EXT-X-MAP:URI=\"\(track.initName)\"\n"
         }
+        // 分片是切好就发的，给每一片打上它真实的播出时刻，
+        // AVPlayer 的 `currentDate()` / `seek(to date:)` 才对得上 —— 时移全靠这层时间锚点。
+        let offset = wallOffset
         for segment in window {
+            if let offset {
+                text += "#EXT-X-PROGRAM-DATE-TIME:\(Self.pdtFormatter.string(from: Date(timeIntervalSince1970: offset + segment.time)))\n"
+            }
             text += "#EXTINF:\(String(format: "%.3f", segment.duration)),\n"
             text += "\(track.segmentName(key: segment.key))\n"
         }

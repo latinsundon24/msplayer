@@ -531,6 +531,10 @@ final class PlayerController: NSObject, ObservableObject {
 
         enforceQualityPreference()
 
+        // DASH 会话就绪与否只有运行时知道，这里同步给界面（底栏的「可时移」）
+        let timeShiftReady = dash?.timeShiftSupported ?? false
+        if timeShiftReady != dashTimeShiftAvailable { dashTimeShiftAvailable = timeShiftReady }
+
         if item.status == .failed {
             reportSystemError(item)
         }
@@ -670,6 +674,41 @@ final class PlayerController: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - DASH 直播时移
+
+    /// 当前 DASH 会话是否自带可回溯的时移窗口。
+    @Published private(set) var dashTimeShiftAvailable = false
+
+    /// 本地播放列表此刻覆盖的播出时刻区间
+    var dashTimeShiftWindow: (start: Date, end: Date)? { dash?.timeShiftWindow }
+    /// 播放器给出的当前播出时刻（依赖播放列表里的 EXT-X-PROGRAM-DATE-TIME）
+    var dashCurrentDate: Date? { avPlayer.currentItem?.currentDate() }
+    /// 是否能走「不重新拉流」的原生时移
+    var canDashTimeShift: Bool { dash?.timeShiftSupported ?? false }
+
+    /// 摊开时移窗口：把源站保留的历史分片补进本地播放列表。
+    /// 播放不中断，之后 AVPlayer 刷新清单就能在过去几十分钟里任意拖动。
+    func enableDashTimeShift() async {
+        await dash?.enableTimeShift()
+    }
+
+    /// 直接跳到某个播出时刻。
+    func seekToDashDate(_ date: Date) {
+        guard backend == .system, let dash, let item = avPlayer.currentItem else { return }
+        if item.currentDate() != nil {
+            // 有 PDT 就按墙钟定位，最准
+            avPlayer.seek(to: date)
+            return
+        }
+        // 兜底：拿不到 PDT 时按可 seek 区间的末端（≈实时）反推位置
+        guard let end = item.seekableTimeRanges.last?.timeRangeValue.end.seconds,
+              let window = dash.timeShiftWindow else { return }
+        let behind = window.end.timeIntervalSince(date)
+        let position = max(0, end - behind)
+        avPlayer.seek(to: CMTime(seconds: position, preferredTimescale: 600),
+                      toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
     func setRate(_ value: Float) {
         rate = value
         if backend == .system, avPlayer.rate > 0 {
@@ -691,6 +730,7 @@ final class PlayerController: NSObject, ObservableObject {
         startupWatchdog = nil
         dash?.stop()
         dash = nil
+        dashTimeShiftAvailable = false
         proxy?.stop()
         proxy = nil
         avPlayer.pause()

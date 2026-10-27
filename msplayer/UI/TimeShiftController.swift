@@ -22,6 +22,7 @@ final class TimeShiftController: ObservableObject {
     enum Mode: Equatable {
         case seek    // 流内有时长，直接 seek
         case reload  // 每次步进重新取流
+        case dash    // DASH 原生时移：源站自带回溯窗口，按墙钟时刻跳转，不重新拉流
     }
 
     /// 刚进入时移时，时移时间比实时往回退的秒数。
@@ -105,8 +106,56 @@ final class TimeShiftController: ObservableObject {
         enter(channel: channel, lineIndex: lineIndex)
     }
 
+    /// DASH 原生时移：源站的动态清单本身就在时移缓冲里留着过去几十分钟的分片，
+    /// 摊开窗口后直接在当前会话里按播出时刻跳转 —— 不重新拉流，直播不会断。
+    func enterDash(channel: Channel, lineIndex: Int) {
+        guard let player, player.canDashTimeShift else {
+            status = .failed("该频道不支持时移")
+            isActive = true
+            return
+        }
+        self.channel = channel
+        self.lineIndex = lineIndex
+        self.mode = .dash
+        self.status = .loading
+        self.isActive = true
+        self.notice = nil
+        self.pendingSeek = nil
+        let now = Date()
+        self.liveDate = now
+        self.windowStart = now.addingTimeInterval(-Self.historyWindow)
+        self.windowEnd = now
+        self.shiftDate = now.addingTimeInterval(-Self.entryDelay)
+        self.barVisible = true
+        reloadTask?.cancel()
+        reloadTask = nil
+        scheduleBarHide()
+
+        reloadTask = Task { @MainActor in
+            await player.enableDashTimeShift()
+            guard !Task.isCancelled, self.isActive, self.mode == .dash else { return }
+            // 窗口是起播时就摊开的，这里只给播放器一点时间把状态稳定下来
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, self.isActive, self.mode == .dash else { return }
+            self.refreshDashWindow()
+            self.status = .ready
+            self.seek(to: Date().addingTimeInterval(-Self.entryDelay))
+            self.verifyDashSeek()
+        }
+        armWatchdog()
+    }
+
     /// 回到直播：清掉时移状态并重新拉实时流。
+    ///
+    /// DASH 原生时移不需要重开流，直接把播放点挪到窗口末端（就是实时）即可。
     func exitToLive() {
+        if mode == .dash, let player {
+            player.setRate(1)
+            player.seekToDashDate(Date())
+            player.play()
+            deactivate()
+            return
+        }
         guard let channel = self.channel, let player = self.player else {
             deactivate()
             return
@@ -154,6 +203,18 @@ final class TimeShiftController: ObservableObject {
         // 时移不能越过实时
         let clamped = min(target, now.addingTimeInterval(-1))
         notice = nil
+
+        if mode == .dash {
+            refreshDashWindow()
+            // 别让播放点退到窗口之前，否则 AVPlayer 会直接跳回实时
+            let earliest = windowStart.addingTimeInterval(2)
+            let bounded = max(clamped, earliest)
+            if bounded > clamped { notice = "已到最早可回看的画面" }
+            shiftDate = bounded
+            player?.seekToDashDate(bounded)
+            if !(player?.isPlaying ?? true) { player?.play() }
+            return
+        }
 
         if mode == .seek {
             seekWithinStream(to: clamped, now: now)
@@ -282,6 +343,17 @@ final class TimeShiftController: ObservableObject {
     func syncCurrentTime(_ time: Double) {
         guard status != .idle else { return }
 
+        if mode == .dash {
+            guard status == .ready, let player, let date = player.dashCurrentDate else { return }
+            refreshDashWindow()
+            shiftDate = min(date, Date())
+            // 播到窗口末端就等于追上了实时，画面会停在那儿，得告诉用户
+            if date >= Date().addingTimeInterval(-3), notice != Self.reachedLiveNotice {
+                notice = Self.reachedLiveNotice
+            }
+            return
+        }
+
         if status == .loading {
             // 已经在出画面但始终拿不到时长：按「每次重取」模式用
             if time > 1, (player?.duration ?? 0) <= 0 {
@@ -311,6 +383,26 @@ final class TimeShiftController: ObservableObject {
         let duration = player?.duration ?? 0
         if duration > 0, time >= duration - 1, notice != Self.reachedLiveNotice {
             notice = Self.reachedLiveNotice
+        }
+    }
+
+    /// DASH 窗口会随直播往前挪，每次操作前先同步一次，界面上的拖拽范围才准。
+    private func refreshDashWindow() {
+        guard let window = player?.dashTimeShiftWindow else { return }
+        windowStart = window.start
+        windowEnd = window.end
+    }
+
+    /// 播放点跳转后复核一次：播放列表还没刷到新窗口时会跳空，此时补一次定位。
+    private func verifyDashSeek() {
+        let want = shiftDate
+        reloadTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, self.isActive, self.mode == .dash else { return }
+            guard let current = self.player?.dashCurrentDate else { return }
+            if abs(current.timeIntervalSince(want)) > 8 {
+                self.player?.seekToDashDate(want)
+            }
         }
     }
 

@@ -287,8 +287,9 @@ struct RootView: View {
         return group.lines[lineIndex]
     }
 
+    /// 当前频道能否时移：线路地址支持回看（playseek），或者正在播的 DASH 流自带时移窗口。
     private var supportsCatchUp: Bool {
-        catchUpLine(in: currentGroup) != nil
+        catchUpLine(in: currentGroup) != nil || player.dashTimeShiftAvailable
     }
 
     /// 当前线路优先；当前线路不支持时，在同频道其他线路里找一条支持回看的。
@@ -423,17 +424,34 @@ struct RootView: View {
     /// 进入时移：以「实时 − 4 秒」为起点拉一段时移流。
     /// 当前线路不支持时，自动切到同频道里支持回看的那条线路。
     private func enterTimeShift() {
-        guard let group = currentGroup,
-              let line = catchUpLine(in: group),
-              group.lines.indices.contains(line) else {
+        guard let group = currentGroup else {
             showBanner("该频道不支持时移")
             return
         }
         currentGroup = group
-        lineIndex = line
         lastChannelName = group.name
         catchUpProgram = nil
         visiblePanel = nil
+
+        // DASH 直播自带时移窗口：源站本来就把历史分片留着，不用重新拉流，
+        // 摊开窗口后直接在当前会话里回退，直播也不会断。
+        if player.dashTimeShiftAvailable {
+            let line = group.lines.indices.contains(lineIndex) ? lineIndex : 0
+            lineIndex = line
+            guard group.lines.indices.contains(line) else {
+                showBanner("该频道不支持时移")
+                return
+            }
+            timeShift.enterDash(channel: group.lines[line], lineIndex: line)
+            return
+        }
+
+        guard let line = catchUpLine(in: group),
+              group.lines.indices.contains(line) else {
+            showBanner("该频道不支持时移")
+            return
+        }
+        lineIndex = line
         timeShift.enter(channel: group.lines[line], lineIndex: line)
     }
 

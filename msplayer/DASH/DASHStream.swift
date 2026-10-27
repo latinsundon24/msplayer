@@ -45,6 +45,16 @@ final class DASHStream {
 
     var language: String? { adaptation.lang }
 
+    /// `@presentationTimeOffset`（秒）。
+    ///
+    /// 清单里的 `$Time$` 是 presentation 时间轴，减掉 PTO 才是 Period 内的相对时间；
+    /// `liveSegments` 里算的 `startSeconds` 已经做过这个修正，要还原墙钟时刻得把它加回去。
+    var presentationTimeOffset: Double {
+        guard let template else { return 0 }
+        let ts = template.timescale > 0 ? template.timescale : 1
+        return template.pto / ts
+    }
+
     // MARK: - 分片
 
     struct Segment {
