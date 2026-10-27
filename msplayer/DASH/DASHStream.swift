@@ -147,7 +147,9 @@ final class DASHStream {
         var candidates: [Segment] = []
 
         if !template.timeline.isEmpty {
-            for (position, entry) in expandedTimeline().enumerated() {
+            // 有源站时移窗口时，按窗口长度换算展开上限，否则 r=-1 只会展开默认的 600 条
+            let repeatCap = timeShiftBuffer.map { min(20000, Int(ceil($0 / 0.5)) + maxCount) }
+            for (position, entry) in expandedTimeline(repeatCap: repeatCap).enumerated() {
                 let startSeconds = entry.t / ts - ptoSeconds
                 let endSeconds = startSeconds + entry.d / ts
                 let number = template.startNumber + position
@@ -183,7 +185,7 @@ final class DASHStream {
         return Array(candidates.suffix(maxCount))
     }
 
-    private func expandedTimeline() -> [(t: Double, d: Double)] {
+    private func expandedTimeline(repeatCap: Int? = nil) -> [(t: Double, d: Double)] {
         guard let template = template else { return [] }
         var out: [(t: Double, d: Double)] = []
         var current: Double = 0
@@ -196,7 +198,9 @@ final class DASHStream {
                 // r = -1：一直重复到 Period 结束；直播清单没有总时长时，先展开一段足够长的窗口
                 var t = current
                 var guardCount = 0
-                let cap = periodEnd > 0 ? 20000 : 600
+                // 默认 600 条按 2 秒分片只有 20 分钟，会把时移窗口卡死；
+                // 调用方给了 repeatCap（按源站 timeShiftBufferDepth 换算）就按它展开。
+                let cap = periodEnd > 0 ? 20000 : (repeatCap ?? 600)
                 while guardCount < cap {
                     if periodEnd > 0 && t + entry.d > periodEnd { break }
                     out.append((t, entry.d))

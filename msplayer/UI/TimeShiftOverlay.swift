@@ -253,7 +253,13 @@ struct TimeShiftOverlay: View {
                         let ratio = Self.ratio(at: value.location.x, width: geo.size.width)
                         dragging = false
                         controller.revealBar()
-                        controller.seek(to: controller.windowStart.addingTimeInterval(total * ratio))
+                        if ratio <= 0.01 {
+                            // 拖到最左端 = 想看更早的画面：继续往前翻一页。
+                            // 之前这里直接 seek 到窗口起点，窗口不动，于是「拖到头就再也拉不过去」。
+                            controller.extendEarlier()
+                        } else {
+                            controller.seek(to: controller.windowStart.addingTimeInterval(total * ratio))
+                        }
                     }
             )
         }

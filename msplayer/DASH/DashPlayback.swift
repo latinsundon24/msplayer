@@ -70,10 +70,40 @@ final class DashPlayback {
 
     /// 常规直播在本地 HLS 里保留的最近分片数
     private static let liveKeepSegments = 12
-    /// 开启时移后，本地 HLS 暴露的可回退窗口（秒）
-    static let timeShiftWindowSeconds: Double = 30 * 60
-    /// 时移窗口的分片上限：小分片源站据此收敛，避免播放列表无限膨胀
-    private static let timeShiftMaxSegments = 900
+    /// 源站未声明 `timeShiftBufferDepth` 时，时移窗口的默认长度（秒）
+    private static let defaultTimeShiftWindowSeconds: Double = 30 * 60
+    /// 时移窗口硬上限（秒）：源站声明再大也不无限摊开，6 小时足够且不至于撑爆播放列表
+    private static let maxTimeShiftWindowSeconds: Double = 6 * 3600
+    /// 时移窗口分片预算的硬上限，防止极短分片源把内存和清单撑爆
+    private static let maxTimeShiftSegments = 12_000
+
+    /// 开启时移后，本地 HLS 暴露的可回退窗口（秒）。
+    ///
+    /// 关键：**跟随源站声明的 `timeShiftBufferDepth`**——源站留了多久历史，
+    /// 就应该能回看多久。早期版本这里写死 30 分钟，导致源站明明留了 2 小时，
+    /// 进度条也只能拖到 30 分钟前，再往前直接拖不动。
+    private var timeShiftWindowSeconds: Double {
+        guard let depth = document?.timeShiftBufferDepth, depth > 60 else {
+            return Self.defaultTimeShiftWindowSeconds
+        }
+        return min(depth, Self.maxTimeShiftWindowSeconds)
+    }
+
+    /// 平均分片时长（秒），用于把窗口时长换算成分片数；取不到就按 2 秒估。
+    /// 注意：调用方都在锁内，必须用 `referenceWindowInLock()`，否则会死锁。
+    private var averageSegmentDurationInLock: Double {
+        guard let segments = referenceWindowInLock(), !segments.isEmpty else { return 2 }
+        let total = segments.reduce(0.0) { $0 + $1.duration }
+        guard total > 0 else { return 2 }
+        return max(total / Double(segments.count), 0.5)
+    }
+
+    /// 时移窗口需要保留的分片预算：按「窗口时长 ÷ 平均分片时长」换算，带硬上限。
+    private var timeShiftSegmentBudget: Int {
+        let need = Int((timeShiftWindowSeconds / averageSegmentDurationInLock).rounded(.up))
+            + Self.liveKeepSegments
+        return min(max(need, 96), Self.maxTimeShiftSegments)
+    }
 
     /// 同类轨道保留上限，避免清单与内存无谓膨胀
     private static let maxVideoTracks = 6
@@ -632,8 +662,9 @@ final class DashPlayback {
         defer { lock.unlock() }
 
         ptoSeconds = preferredTrack()?.stream.presentationTimeOffset ?? 0
-        // 每次刷新都会同步 representation 的模板，再算窗口
-        let budget = timeShiftEnabled ? Self.timeShiftMaxSegments : Self.liveKeepSegments + 6
+        // 每次刷新都会同步 representation 的模板，再算窗口。
+        // 分片预算随时移窗口跟随源站而变，别再用固定的 900 片把 2 小时的源砍成 30 分钟。
+        let budget = timeShiftEnabled ? timeShiftSegmentBudget : Self.liveKeepSegments + 6
         let replaceHistory = historyPending
         historyPending = false
         for track in everyTrack {
@@ -681,7 +712,7 @@ final class DashPlayback {
         if timeShiftEnabled {
             var remain = merged.reduce(0) { $0 + $1.duration }
             var head = 0
-            while remain > Self.timeShiftWindowSeconds, head < merged.count - Self.liveKeepSegments {
+            while remain > timeShiftWindowSeconds, head < merged.count - Self.liveKeepSegments {
                 remain -= merged[head].duration
                 head += 1
             }
@@ -710,7 +741,7 @@ final class DashPlayback {
 
     /// 当前策略下每条轨道最多保留的分片数
     private var retainSegments: Int {
-        timeShiftEnabled ? Self.timeShiftMaxSegments : Self.liveKeepSegments
+        timeShiftEnabled ? timeShiftSegmentBudget : Self.liveKeepSegments
     }
 
     private func currentWindowCount() -> Int {

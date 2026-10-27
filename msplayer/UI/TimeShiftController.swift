@@ -32,8 +32,12 @@ final class TimeShiftController: ObservableObject {
     /// 可选倍速。
     static let rateOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
 
-    /// 时移窗口保留的历史长度。
+    /// 时移窗口保留的历史长度（单页）。
     private static let historyWindow: TimeInterval = 30 * 60
+    /// 向前扩展一页的步长：拖到最左端还不够早时，一次往更早推这么多。
+    static let extendStep: TimeInterval = 30 * 60
+    /// 可回看的绝对上限：再往前源站也不会给，跟 DASH 那边的窗口上限保持一致。
+    static let maxHistoryWindow: TimeInterval = 6 * 3600
     /// 重新取流时向后保留的余量。
     private static let forwardMargin: TimeInterval = 15 * 60
     /// 起播等待上限。
@@ -208,8 +212,12 @@ final class TimeShiftController: ObservableObject {
             refreshDashWindow()
             // 别让播放点退到窗口之前，否则 AVPlayer 会直接跳回实时
             let earliest = windowStart.addingTimeInterval(2)
+            if clamped < earliest {
+                // DASH 的可回看范围由源站 MPD 的时移缓冲决定，本地没法凭空造出更早的分片，
+                // 这里把上限说清楚，而不是只丢一句含糊的「已到最早」。
+                notice = "该频道最多可回看 \(Int(windowEnd.timeIntervalSince(windowStart) / 60)) 分钟"
+            }
             let bounded = max(clamped, earliest)
-            if bounded > clamped { notice = "已到最早可回看的画面" }
             shiftDate = bounded
             player?.seekToDashDate(bounded)
             if !(player?.isPlaying ?? true) { player?.play() }
@@ -217,11 +225,53 @@ final class TimeShiftController: ObservableObject {
         }
 
         if mode == .seek {
+            // 目标比窗口起点还早：把窗口整体往更早扩一页，并直接定位过去。
+            // 早期版本这里只夹住不扩展，进度条拖到最左端就再也拉不动了。
+            if clamped < windowStart {
+                widenEarlier(to: clamped)
+                return
+            }
             seekWithinStream(to: clamped, now: now)
         } else {
             shiftDate = clamped
             scheduleReload()
         }
+    }
+
+    /// 把时移窗口的起点往更早扩展，覆盖到 `target`，然后直接定位到那里。
+    ///
+    /// 终点保持不变（只往前加历史），所以进度条会变宽、当前画面不跳；
+    /// 拖动到最左端可以连续往前翻页，直到源站允许的最早时间。
+    private func widenEarlier(to target: Date) {
+        guard let channel else { return }
+        let oldest = liveDate.addingTimeInterval(-Self.maxHistoryWindow)
+        guard target > oldest else {
+            notice = "已到该频道可回看的最早时间（约 \(Int(Self.maxHistoryWindow / 3600)) 小时前）"
+            return
+        }
+        // 一次至少扩一页；跨度不够覆盖 target 时按需多扩
+        let span = max(Self.extendStep, windowStart.timeIntervalSince(target))
+        let newStart = max(windowStart.addingTimeInterval(-span), oldest)
+        guard windowEnd.timeIntervalSince(newStart) > 120 else { return }
+        reload(channel: channel,
+               lineIndex: lineIndex,
+               from: newStart,
+               to: windowEnd,
+               seekTo: target)
+    }
+
+    /// 界面上把进度条拖到最左端时调用：继续往更早的画面翻一页。
+    /// DASH 由源站窗口决定，只能提示上限；其余模式扩窗口。
+    func extendEarlier() {
+        guard status == .ready else { return }
+        if mode == .dash {
+            refreshDashWindow()
+            let minutes = Int(windowEnd.timeIntervalSince(windowStart) / 60)
+            notice = "该频道最多可回看 \(minutes) 分钟"
+            return
+        }
+        let target = windowStart.addingTimeInterval(-Self.extendStep)
+        seek(to: target)
     }
 
     private func seekWithinStream(to target: Date, now: Date) {
@@ -230,9 +280,10 @@ final class TimeShiftController: ObservableObject {
         var clamped = target
         var position = clamped.timeIntervalSince(windowStart)
 
-        // 顶到窗口头部：取一段更早的流
-        if position < 1 {
-            reanchor(to: clamped)
+        // 已经贴到窗口最前端：停在窗口起点即可；需要更早的画面由 widenEarlier 扩窗口
+        if position < 0.5 {
+            player.seek(to: 0)
+            shiftDate = windowStart
             return
         }
 
