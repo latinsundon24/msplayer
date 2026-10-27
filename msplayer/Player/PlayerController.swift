@@ -73,6 +73,76 @@ final class PlayerController: NSObject, ObservableObject {
     private var preferredQualityLimit: Double?
     private var preferredQualityResolution: CGSize = .zero
 
+    // MARK: - 跨启动记忆
+
+    /// 上一次的三项选择，落盘到 `UserDefaults`，退出应用再进来自动套用。
+    ///
+    /// 存的是「名字 / 分辨率」而不是下标：不同频道的轨序号完全可能不一样，
+    /// 但用户实际关心的是「我要粤语音轨」「我要 576p」这种语义。
+    private struct TrackMemory: Codable {
+        var audibleKey: String?
+        var audibleName: String?
+        var legibleKey: String?
+        var legibleName: String?
+        /// 上次把字幕关掉了
+        var legibleOff = false
+        var qualityKey: String?
+        var qualityHeight: Int = 0
+        var qualityWidth: Int = 0
+    }
+
+    private static let memoryDefaultsKey = "msplayer.trackMemory"
+    private var memory = TrackMemory()
+
+    private func loadTrackMemory() {
+        guard let data = UserDefaults.standard.data(forKey: Self.memoryDefaultsKey),
+              let saved = try? JSONDecoder().decode(TrackMemory.self, from: data) else { return }
+        memory = saved
+        if let name = saved.audibleName, !name.isEmpty {
+            preferredAudible = (key: saved.audibleKey ?? "", name: name)
+        }
+        if saved.legibleOff {
+            preferredLegible = (key: Self.offKey, name: "")
+        } else if let name = saved.legibleName, !name.isEmpty {
+            preferredLegible = (key: saved.legibleKey ?? "", name: name)
+        }
+    }
+
+    private func saveTrackMemory() {
+        guard let data = try? JSONEncoder().encode(memory) else { return }
+        UserDefaults.standard.set(data, forKey: Self.memoryDefaultsKey)
+    }
+
+    /// 起播时把记住的清晰度套到当前这一条流上。
+    ///
+    /// 先用上次的下标试（同一条流完全对得上），对不上再按分辨率匹配 —— 换个频道
+    /// 档位数量变了，但「576p」这种选择才是用户真正想要的。
+    private func applyRememberedQuality() {
+        guard let dash, !dash.videoQualities.isEmpty else { return }
+        guard memory.qualityHeight > 0 || memory.qualityWidth > 0 else { return }
+        let qualities = dash.videoQualities
+
+        var target: DashPlayback.VideoQuality?
+        if let key = memory.qualityKey, key.hasPrefix("q"),
+           let remembered = Int(String(key.dropFirst())),
+           qualities.indices.contains(remembered),
+           qualities[remembered].height == memory.qualityHeight {
+            target = qualities[remembered]
+        } else {
+            target = qualities.first { $0.height == memory.qualityHeight }
+                ?? qualities.first { $0.width == memory.qualityWidth }
+        }
+        guard let quality = target else { return }
+
+        preferredQualityKey = "q\(quality.index)"
+        preferredQualityLimit = Double(quality.variantBandwidth)
+        preferredQualityResolution = CGSize(width: CGFloat(quality.width), height: CGFloat(quality.height))
+        memory.qualityKey = preferredQualityKey
+        memory.qualityHeight = quality.height
+        memory.qualityWidth = quality.width
+        saveTrackMemory()
+    }
+
     /// 读取当前 DASH 流提供的清晰度档位；不足两档就返回空数组（没有可选项）。
     func loadVideoQualityChoices(completion: @escaping @MainActor ([VideoQualityChoice]) -> Void) {
         let qualities = dash?.videoQualities ?? []
@@ -119,6 +189,16 @@ final class PlayerController: NSObject, ObservableObject {
         preferredQualityKey = choice.key
         preferredQualityLimit = choice.bandwidthLimit
         preferredQualityResolution = choice.resolution
+        if choice.isAuto {
+            memory.qualityKey = nil
+            memory.qualityHeight = 0
+            memory.qualityWidth = 0
+        } else {
+            memory.qualityKey = choice.key
+            memory.qualityHeight = Int(choice.resolution.height)
+            memory.qualityWidth = Int(choice.resolution.width)
+        }
+        saveTrackMemory()
         guard let item = avPlayer.currentItem else {
             completion?(false)
             return
@@ -313,11 +393,19 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     private func preferredValue(_ characteristic: AVMediaCharacteristic, key: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if characteristic == .audible {
             preferredAudible = (key, name)
+            memory.audibleKey = key
+            memory.audibleName = trimmed.isEmpty ? nil : trimmed
         } else if characteristic == .legible {
             preferredLegible = (key, name)
+            let off = key == Self.offKey
+            memory.legibleOff = off
+            memory.legibleKey = off ? nil : key
+            memory.legibleName = off ? nil : (trimmed.isEmpty ? nil : trimmed)
         }
+        saveTrackMemory()
     }
 
     /// 新 item 就绪后重新套用用户上次手动选过的音轨 / 字幕 / 清晰度
@@ -338,6 +426,16 @@ final class PlayerController: NSObject, ObservableObject {
               let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return }
         if preferred.key == Self.offKey {
             if group.allowsEmptySelection { item.select(nil, in: group) }
+            return
+        }
+        let options = group.options
+        // 跨启动恢复：先按下标定位（最精确），但名字必须也对得上才敢用 ——
+        // 换了个频道时同一个下标可能是完全不同的轨道。
+        if preferred.key.hasPrefix("opt-"),
+           let remembered = Int(String(preferred.key.dropFirst(4))),
+           options.indices.contains(remembered),
+           options[remembered].displayName == preferred.name {
+            item.select(options[remembered], in: group)
             return
         }
         let target = group.options.enumerated().first { index, option in
@@ -378,6 +476,8 @@ final class PlayerController: NSObject, ObservableObject {
         // 把用户在设置里手动选好的一遍(EventLoop)覆盖回去 —— 表现为「选完再进去又是没选的状态」。
         // 关掉自动选择后，`AVPlayerItem.select(_:in:)` 的结果才会被保留。
         avPlayer.appliesMediaSelectionCriteriaAutomatically = false
+
+        loadTrackMemory()
 
         timeObserver = avPlayer.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
@@ -483,6 +583,8 @@ final class PlayerController: NSObject, ObservableObject {
                     }
                     self.dash = playback
                     self.isLive = playback.isLive
+                    // 先按记忆把清晰度上限算出来，起播那一下就不会先跳最高码率
+                    self.applyRememberedQuality()
                     self.isPreparing = false
                     self.statusText = nil
                     self.start(url: url, headers: [:], channel: channel)
