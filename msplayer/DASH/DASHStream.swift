@@ -87,8 +87,9 @@ final class DASHStream {
 
         if !template.timeline.isEmpty {
             var out: [Segment] = []
-            for (position, entry) in expandedTimeline().enumerated() {
-                let number = template.startNumber + position
+            let expanded = expandedTimeline()
+            for (position, entry) in expanded.items.enumerated() {
+                let number = template.startNumber + expanded.firstIndex + position
                 let urlString = expand(template.media ?? "", number: number, time: entry.t)
                 guard let url = resolve(urlString) else { continue }
                 out.append(Segment(url: url, duration: entry.d/ts, time: entry.t/ts, number: number,
